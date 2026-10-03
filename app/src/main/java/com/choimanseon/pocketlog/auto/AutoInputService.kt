@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.choimanseon.pocketlog.app
@@ -38,7 +39,8 @@ class AutoInputService : NotificationListenerService() {
         val pkg = sbn.packageName
         val messages = incomingMessages(n, sbn.postTime)
         if (messages.isEmpty()) return
-        app.scope.launch { messages.forEach { AutoInput.handle(pkg, it.title, it.body, it.time) } }
+        // this runs for every notification on the phone: one odd message must not take the whole app down
+        app.scope.launch { messages.forEach { m -> runCatching { AutoInput.handle(pkg, m.title, m.body, m.time) }.onFailure { Log.w("AutoInput", it) } } }
     }
 
     companion object {
