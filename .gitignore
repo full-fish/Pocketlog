@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+build/
+/local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+server/node_modules/
+server/.wrangler/
+server/.dev.vars
+/private/
+.env
+# 공개 저장소: 개인 가계부 스크린샷은 로컬에만
+/reference/
