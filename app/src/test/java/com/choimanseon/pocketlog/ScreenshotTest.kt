@@ -10,6 +10,10 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.foundation.background
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeRight
 import com.choimanseon.pocketlog.data.Budget
 import com.choimanseon.pocketlog.data.PayKind
 import com.choimanseon.pocketlog.data.PayMethod
@@ -65,12 +69,33 @@ class ScreenshotTest {
 
     @Test
     fun screens() {
+        shot("0-onboarding-1")
+        compose.onNodeWithText("건너뛰기").performClick()
+        shot("0-onboarding-2")
+        compose.onNodeWithText("다음").performClick()
+        shot("0-onboarding-3")
+        compose.onNodeWithText("다음").performClick()
+        shot("0-onboarding-4")
+        compose.onNodeWithText("새로 시작하기").performClick()
+
         val (scanId, orderId) = runBlocking(Dispatchers.IO) { seedSample() }
         compose.waitForIdle()
         shot("1-home")
 
         compose.onNodeWithText("내역").performClick()
         shot("2-history")
+        // swipe the month (anywhere but a row), then come back
+        val period = monthPeriod(LocalDate.now(), 25)
+        compose.onNodeWithText("남은 돈", substring = true).performTouchInput { swipeLeft() }
+        compose.onNodeWithText(period.shiftMonths(1).label()).assertExists()
+        compose.onNodeWithText("남은 돈", substring = true).performTouchInput { swipeRight() }
+        compose.onNodeWithText(period.label()).assertExists()
+        // long-press starts selecting
+        compose.onNodeWithText("김밥천국").performTouchInput { longClick() }
+        compose.onNodeWithText("스타벅스코리아").performClick()
+        compose.onNodeWithText("2건 선택").assertExists()
+        shot("2b-history-select")
+        compose.onNodeWithContentDescription("선택 취소").performClick()
         compose.onNodeWithContentDescription("달력으로 보기").performClick()
         shot("3-calendar")
 
@@ -207,6 +232,7 @@ class RealDataScreenshotTest {
     fun screens() {
         val path = System.getenv("CLEV_DB")
         org.junit.Assume.assumeTrue(path != null && File(path).exists())
+        app.prefs.onboarded = true
         runBlocking(Dispatchers.IO) {
             while (app.dao.categoriesOnce().isEmpty()) delay(20)
             val started = System.currentTimeMillis()

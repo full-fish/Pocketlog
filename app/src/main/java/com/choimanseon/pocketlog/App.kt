@@ -67,6 +67,7 @@ class Prefs(context: Context) {
     var pinSalt by string("pinSalt", "")
     var biometric by bool("biometric", false)
     var budgetAlert by string("budgetAlert", "") // "<period start>:<percent>" last alert sent
+    var onboarded by bool("onboarded", false)
 
     private fun int(key: String, def: Int) = pref({ sp.getInt(key, def) }, { sp.edit().putInt(key, it).apply() })
     private fun bool(key: String, def: Boolean) = pref({ sp.getBoolean(key, def) }, { sp.edit().putBoolean(key, it).apply() })

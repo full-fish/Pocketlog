@@ -94,6 +94,11 @@ class Nav {
 
 @Composable
 fun Root(nav: Nav) {
+    app.prefs.version.collectAsState().value // recompose when onboarding finishes
+    if (!app.prefs.onboarded) {
+        OnboardingScreen { next -> next?.let(nav::push) }
+        return
+    }
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(8)) { nav.scan(context, it) }
     val pickScreenshots = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
