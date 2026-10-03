@@ -92,6 +92,8 @@ object ClevImport {
 
         val spending = db.rows("SELECT * FROM spendinglist ORDER BY s_date, s_time")
         val spendingById = spending.associateBy { it.getValue("_id") }
+        // rows keep the old ids so installment months can point to their purchase; incomes go after all spending ids
+        val incomeIdOffset = spending.maxOfOrNull { it.getValue("_id").toLong() } ?: 0
 
         fun tx(r: Map<String, String>, p: String, type: TxType, offset: Long): Tx {
             val sub = r.getValue("${p}subcate").toLongOrNull()?.takeIf { it > 0 }?.plus(offset)
@@ -117,6 +119,7 @@ object ClevImport {
                 }
             }
             return Tx(
+                id = r.getValue("_id").toLong() + if (type == TxType.INCOME) incomeIdOffset else 0,
                 type = type,
                 amount = r.getValue("${p}price").toLongOrNull() ?: 0,
                 occurredAt = at.first,
@@ -125,6 +128,7 @@ object ClevImport {
                 categoryId = sub?.takeIf { it in catIds } ?: top?.takeIf { it in catIds },
                 paymentMethodId = r.getValue("${p}card").toLongOrNull()?.takeIf { it in payIds },
                 installmentMonths = installment,
+                installmentOf = purchase?.getValue("_id")?.toLong(),
                 source = TxSource.IMPORT,
             )
         }

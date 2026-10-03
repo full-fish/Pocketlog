@@ -32,6 +32,7 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.num
 import com.choimanseon.pocketlog.domain.signedAmount
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +50,7 @@ fun DetailScreen(id: Long, nav: Nav) {
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val raw by rememberFlow<RawMessage?>(null, tx?.rawMessageId) { dao.rawMessage(tx?.rawMessageId ?: -1) }
     val job by rememberFlow(null, tx?.scanJobId) { dao.scanJob(tx?.scanJobId ?: -1) }
+    val plan by rememberFlow(emptyList(), id) { dao.purchaseRowsFlow(id) }
     var confirmDelete by remember { mutableStateOf(false) }
     val t = tx
 
@@ -80,7 +82,7 @@ fun DetailScreen(id: Long, nav: Nav) {
                 if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.let { c -> "${c.emoji} ${c.parentId?.let { catMap[it]?.name + " › " }.orEmpty()}${c.name}" } ?: "미분류")
                 InfoRow(if (t.type == TxType.TRANSFER) "보낸 곳" else "결제수단", t.paymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.type == TxType.TRANSFER) InfoRow("받은 곳", t.toPaymentMethodId?.let { payMap[it]?.name } ?: "-")
-                if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월")
+                if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월" + if (plan.size > 1) " · 전체 ${num(plan.sumOf { it.amount })}원" else "")
                 t.originalAmount?.let { InfoRow("외화", it) }
                 if (t.memo.isNotBlank()) InfoRow("메모", t.memo)
                 InfoRow("기록 방법", if (t.source == TxSource.IMPORT) "똑똑가계부에서 가져옴" else sourceLabel(t.source)?.let { "$it 자동 기록" } ?: "직접 입력")
@@ -117,17 +119,21 @@ fun DetailScreen(id: Long, nav: Nav) {
             SoftButton("복제", {
                 app.scope.launch {
                     val now = System.currentTimeMillis()
-                    dao.insert(t.copy(id = 0, occurredAt = now, createdAt = now, updatedAt = now, source = TxSource.MANUAL, rawMessageId = null, scanJobId = null, status = TxStatus.CONFIRMED))
+                    dao.insert(t.copyNow(now))
                 }
                 nav.toast("지금 시간으로 복제했어요")
             }, Modifier.weight(1f))
             SoftButton("수정", { nav.entry = Entry(editId = t.id) }, Modifier.weight(1f), pal.brand)
         }
         if (t.status == TxStatus.PENDING_REVIEW) PrimaryButton("확인했어요", {
-            app.scope.launch { dao.update(t.copy(status = TxStatus.CONFIRMED, updatedAt = System.currentTimeMillis())) }
+            app.scope.launch { dao.setStatus(t.id, TxStatus.CONFIRMED) }
         }, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp))
     }
-    if (confirmDelete) ConfirmDialog("이 내역을 삭제할까요?", "삭제 후 바로 되돌릴 수 있어요.", "삭제", danger = true, onDismiss = { confirmDelete = false }) {
+    if (confirmDelete) ConfirmDialog(
+        "이 내역을 삭제할까요?",
+        (if (plan.size > 1) "할부 ${plan.size}개월이 모두 삭제돼요. " else "") + "삭제 후 바로 되돌릴 수 있어요.",
+        "삭제", danger = true, onDismiss = { confirmDelete = false },
+    ) {
         confirmDelete = false
         app.scope.launch { dao.softDelete(id) }
         nav.pop()
@@ -178,7 +184,7 @@ fun ReviewScreen(nav: Nav) {
                 Column {
                     TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) }
                     Row(Modifier.padding(start = 72.dp, end = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("맞아요") { app.scope.launch { dao.update(tx.copy(status = TxStatus.CONFIRMED, updatedAt = System.currentTimeMillis())) } }
+                        Chip("맞아요") { app.scope.launch { dao.setStatus(tx.id, TxStatus.CONFIRMED) } }
                         Chip("수정") { nav.entry = Entry(editId = tx.id) }
                         Chip("삭제") { app.scope.launch { dao.softDelete(tx.id) }; nav.undo("삭제했어요") { dao.undoDelete(tx.id) } }
                     }

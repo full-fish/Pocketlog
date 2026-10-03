@@ -2,6 +2,7 @@ package com.choimanseon.pocketlog.domain
 
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.Tx
+import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
@@ -103,6 +104,37 @@ fun evalExpr(expr: String): Long? {
     for (i in o2.indices) r = if (o2[i] == '+') r + n2[i + 1] else r - n2[i + 1]
     return r
 }
+
+// ---------------------------------------------------------------- installments
+
+/** The memo the app writes on installment months; a user's own memo replaces it. */
+val autoInstallmentMemo = Regex("""할부 \d+/\d+회차""")
+
+/**
+ * An installment purchase is kept as one row per month, like the card bill and 똑똑가계부 (사용자 결정 2026-10-03):
+ * month 1 on the purchase day carries the remainder, months 2..n follow on the same day of each month.
+ * Months 2..n get id 0; the caller sets installmentOf to month 1's id.
+ */
+fun installmentRows(purchase: Tx): List<Tx> {
+    val n = purchase.installmentMonths
+    if (n < 2 || purchase.type != TxType.EXPENSE || purchase.amount <= 0) return listOf(purchase)
+    val part = purchase.amount / n
+    val at = Instant.ofEpochMilli(purchase.occurredAt).atZone(ZoneId.systemDefault())
+    return (1..n).map { k ->
+        purchase.copy(
+            id = if (k == 1) purchase.id else 0,
+            amount = if (k == 1) purchase.amount - part * (n - 1) else part,
+            occurredAt = at.plusMonths(k - 1L).toInstant().toEpochMilli(),
+            memo = purchase.memo.takeUnless { it.isBlank() || autoInstallmentMemo.matches(it) } ?: "할부 $k/${n}회차",
+        )
+    }
+}
+
+/** "복제": the same spending again right now, as a one-off entry. */
+fun Tx.copyNow(now: Long = System.currentTimeMillis()) = copy(
+    id = 0, occurredAt = now, createdAt = now, updatedAt = now, source = TxSource.MANUAL, rawMessageId = null, scanJobId = null,
+    status = TxStatus.CONFIRMED, installmentMonths = 0, installmentOf = null, memo = memo.takeUnless { autoInstallmentMemo.matches(it) }.orEmpty(),
+)
 
 // ---------------------------------------------------------------- stats
 

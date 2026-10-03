@@ -28,6 +28,7 @@ data class Tx(
     val paymentMethodId: Long? = null,
     val toPaymentMethodId: Long? = null,
     val installmentMonths: Int = 0,
+    val installmentOf: Long? = null, // months 2..n of an installment purchase point to month 1 (see installmentRows)
     val status: TxStatus = TxStatus.CONFIRMED,
     val source: TxSource = TxSource.MANUAL,
     val rawMessageId: Long? = null,

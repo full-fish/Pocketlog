@@ -8,15 +8,29 @@ import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.Period
 import com.choimanseon.pocketlog.domain.byTopCategory
 import com.choimanseon.pocketlog.domain.evalExpr
+import com.choimanseon.pocketlog.domain.installmentRows
 import com.choimanseon.pocketlog.domain.monthPeriod
 import com.choimanseon.pocketlog.domain.shortWon
+import com.choimanseon.pocketlog.domain.toLocalDate
 import com.choimanseon.pocketlog.domain.total
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.LocalDate
+import java.time.ZoneId
 
 class DomainTest {
+    @Test fun installmentIsOneRowPerMonth() {
+        val at = LocalDate.of(2026, 1, 31).atTime(14, 21).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val rows = installmentRows(Tx(amount = 52_000, occurredAt = at, installmentMonths = 3))
+        assertEquals(listOf(17_334L, 17_333L, 17_333L), rows.map { it.amount }) // month 1 takes the remainder
+        assertEquals(listOf("2026-01-31", "2026-02-28", "2026-03-31"), rows.map { it.occurredAt.toLocalDate().toString() })
+        assertEquals(listOf("할부 1/3회차", "할부 2/3회차", "할부 3/3회차"), rows.map { it.memo })
+        assertEquals("노트북", installmentRows(Tx(amount = 900_000, occurredAt = at, installmentMonths = 3, memo = "노트북"))[2].memo)
+        assertEquals(1, installmentRows(Tx(amount = 52_000, occurredAt = at)).size) // 일시불
+        assertEquals(1, installmentRows(Tx(amount = -52_000, occurredAt = at, installmentMonths = 3)).size) // a refund is not spread
+    }
+
     @Test fun monthPeriodStartsOnPayday() {
         assertEquals(Period(LocalDate.of(2026, 9, 25), LocalDate.of(2026, 10, 25)), monthPeriod(LocalDate.of(2026, 10, 3), 25))
         assertEquals(Period(LocalDate.of(2026, 10, 25), LocalDate.of(2026, 11, 25)), monthPeriod(LocalDate.of(2026, 10, 25), 25))

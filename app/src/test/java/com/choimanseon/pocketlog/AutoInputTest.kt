@@ -71,6 +71,34 @@ class AutoInputTest {
         assertEquals(1, txs().size) // the push for the same cancel adds no refund
     }
 
+    // 할부 is one row per month (사용자 결정 2026-10-03)
+
+    @Test
+    fun installmentPurchaseIsOneRowPerMonth() {
+        receive("[Web발신]\n삼성1234승인 홍*동\n52,000원 03개월\n$mmdd 이마트 역삼점")
+        val rows = txs().sortedBy { it.occurredAt }
+        assertEquals(listOf(17_334L, 17_333L, 17_333L), rows.map { it.amount })
+        assertEquals(listOf(null, rows[0].id, rows[0].id), rows.map { it.installmentOf })
+        // the card app's push for the same payment is still a duplicate, and a cancel cancels every month
+        receive("52,000원 3개월 승인\n이마트 역삼점", title = "삼성카드", pkg = "kr.co.samsungcard.mpocket", at = post + 30_000)
+        assertEquals(3, txs().size)
+        receive("[Web발신]\n삼성1234승인취소 홍*동\n52,000원 03개월\n$mmdd 이마트 역삼점", at = post + 60_000)
+        assertEquals(List(3) { TxStatus.CANCELED }, txs().map { it.status })
+    }
+
+    @Test
+    fun installmentMonthsAreEditedAndDeletedTogether() = runBlocking(Dispatchers.IO) {
+        val first = dao.insertPurchase(Tx(amount = 90_000, occurredAt = post, merchant = "노트북", installmentMonths = 3))
+        dao.setCategory(txs().maxBy { it.occurredAt }.id, 1) // from any month
+        assertEquals(listOf(1L, 1L, 1L), txs().map { it.categoryId })
+        dao.replacePurchase(dao.txOnce(first)!!.copy(amount = 120_000, installmentMonths = 2))
+        assertEquals(listOf(60_000L, 60_000L), txs().sortedBy { it.occurredAt }.map { it.amount })
+        dao.softDelete(txs().maxBy { it.occurredAt }.id)
+        assertTrue(txs().isEmpty())
+        dao.undoDelete(first)
+        assertEquals(2, txs().size)
+    }
+
     // Only money that enters or leaves "me" is recorded (사용자 결정 2026-10-03)
 
     @Test

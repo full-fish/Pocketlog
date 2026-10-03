@@ -28,6 +28,7 @@ import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.Period
+import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.countable
 import com.choimanseon.pocketlog.domain.dailyExpense
 import com.choimanseon.pocketlog.domain.monthPeriod
@@ -127,13 +128,10 @@ fun SwipeTxRow(tx: Tx, cats: Map<Long, Category>, pays: Map<Long, PayMethod>, na
             when (value) {
                 SwipeToDismissBoxValue.EndToStart -> {
                     app.scope.launch { app.dao.softDelete(tx.id) }
-                    nav.undo("삭제했어요") { app.dao.undoDelete(tx.id) }
+                    nav.undo(if (tx.installmentMonths > 1) "할부 ${tx.installmentMonths}개월을 모두 삭제했어요" else "삭제했어요") { app.dao.undoDelete(tx.id) }
                 }
                 SwipeToDismissBoxValue.StartToEnd -> {
-                    app.scope.launch {
-                        val now = System.currentTimeMillis()
-                        app.dao.insert(tx.copy(id = 0, occurredAt = now, createdAt = now, updatedAt = now, source = com.choimanseon.pocketlog.data.TxSource.MANUAL, rawMessageId = null, scanJobId = null, status = com.choimanseon.pocketlog.data.TxStatus.CONFIRMED))
-                    }
+                    app.scope.launch { app.dao.insert(tx.copyNow()) }
                     nav.toast("지금 시간으로 복제했어요")
                 }
                 else -> Unit

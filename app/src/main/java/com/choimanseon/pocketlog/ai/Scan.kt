@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.Categorizer
+import com.choimanseon.pocketlog.auto.paid
 import com.choimanseon.pocketlog.auto.similar
 import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Rule
@@ -186,7 +187,7 @@ object Scan {
         val date = order.date ?: return null
         val from = date.minusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val to = date.plusDays(2).atStartOfDay(zone).toInstant().toEpochMilli()
-        return app.dao.txAround(from, to).firstOrNull { it.type == TxType.EXPENSE && it.amount == order.total && similar(it.merchant, order.merchant) }
+        return app.dao.txAround(from, to).firstOrNull { it.type == TxType.EXPENSE && paid(it) == order.total && similar(it.merchant, order.merchant) }
     }
 
     private fun splitsFor(order: ScanOrder, cats: List<Long?>, total: Long): List<TxSplit> {
@@ -209,12 +210,12 @@ object Scan {
             val memo = order.items.firstOrNull()?.name?.let { if (order.items.size > 1) "$it 외 ${order.items.size - 1}개" else it }.orEmpty()
             when {
                 c.mergeInto != null -> {
+                    // an installment plan takes no items: month 1 would count the whole order in the stats
+                    val plan = c.mergeInto.installmentMonths > 1
                     dao.deleteSplits(c.mergeInto.id)
-                    if (splits.size > 1) dao.insertSplits(splits.map { it.copy(txId = c.mergeInto.id) })
-                    dao.update(c.mergeInto.copy(
-                        scanJobId = job.id, memo = c.mergeInto.memo.ifBlank { memo },
-                        categoryId = c.mergeInto.categoryId ?: mainCat, updatedAt = System.currentTimeMillis(),
-                    ))
+                    if (splits.size > 1 && !plan) dao.insertSplits(splits.map { it.copy(txId = c.mergeInto.id) })
+                    dao.update(c.mergeInto.copy(scanJobId = job.id, memo = c.mergeInto.memo.ifBlank { memo }, updatedAt = System.currentTimeMillis()))
+                    if (c.mergeInto.categoryId == null) dao.setCategory(c.mergeInto.id, mainCat)
                 }
                 separateItems && splits.size > 1 -> splits.forEach { s ->
                     dao.insert(Tx(amount = s.amount, occurredAt = at, merchant = merchant, memo = s.name, categoryId = s.categoryId,

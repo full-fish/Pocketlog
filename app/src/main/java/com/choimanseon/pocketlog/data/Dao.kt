@@ -7,7 +7,11 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import androidx.room.Upsert
+import com.choimanseon.pocketlog.domain.installmentRows
 import kotlinx.coroutines.flow.Flow
+
+/** The rows of the purchase containing :id: just that row, or every month of its installment plan. */
+private const val PURCHASE = "COALESCE((SELECT installmentOf FROM Tx WHERE id = :id), :id) IN (id, installmentOf)"
 
 @Dao
 interface PocketDao {
@@ -73,11 +77,47 @@ interface PocketDao {
         return id
     }
 
-    @Query("UPDATE Tx SET deletedAt = :now, updatedAt = :now WHERE id = :id")
+    /** Every new purchase goes through here so installments become monthly rows. Returns month 1's id. */
+    @Transaction
+    suspend fun insertPurchase(tx: Tx, splits: List<TxSplit> = emptyList()): Long {
+        val rows = installmentRows(tx)
+        val id = insertWithSplits(rows.first(), splits)
+        rows.drop(1).forEach { insert(it.copy(installmentOf = id)) }
+        return id
+    }
+
+    /** An edited purchase: month 1 keeps its id, months 2..n are written again. */
+    @Transaction
+    suspend fun replacePurchase(tx: Tx) {
+        deleteLaterInstallments(tx.id)
+        val rows = installmentRows(tx)
+        update(rows.first())
+        rows.drop(1).forEach { insert(it.copy(installmentOf = tx.id)) }
+    }
+
+    @Query("DELETE FROM Tx WHERE installmentOf = :id")
+    suspend fun deleteLaterInstallments(id: Long)
+
+    @Query("SELECT * FROM Tx WHERE $PURCHASE ORDER BY occurredAt")
+    suspend fun purchaseRows(id: Long): List<Tx>
+
+    @Query("SELECT * FROM Tx WHERE $PURCHASE ORDER BY occurredAt")
+    fun purchaseRowsFlow(id: Long): Flow<List<Tx>>
+
+    @Query("SELECT COALESCE(SUM(amount), 0) FROM Tx WHERE $PURCHASE")
+    suspend fun purchaseTotal(id: Long): Long
+
+    @Query("UPDATE Tx SET deletedAt = :now, updatedAt = :now WHERE $PURCHASE")
     suspend fun softDelete(id: Long, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE Tx SET deletedAt = NULL WHERE id = :id")
+    @Query("UPDATE Tx SET deletedAt = NULL WHERE $PURCHASE")
     suspend fun undoDelete(id: Long)
+
+    @Query("UPDATE Tx SET status = :status, updatedAt = :now WHERE $PURCHASE")
+    suspend fun setStatus(id: Long, status: TxStatus, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE Tx SET categoryId = :categoryId, updatedAt = :now WHERE $PURCHASE")
+    suspend fun setCategory(id: Long, categoryId: Long?, now: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM Tx WHERE id = :id")
     suspend fun deleteTx(id: Long)

@@ -29,6 +29,7 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.autoInstallmentMemo
 import com.choimanseon.pocketlog.domain.evalExpr
 import com.choimanseon.pocketlog.domain.num
 import kotlinx.coroutines.delay
@@ -69,7 +70,8 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
     val cats by rememberFlow(emptyList()) { dao.categories() }
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
 
-    var original by remember { mutableStateOf<Tx?>(null) }
+    var original by remember { mutableStateOf<Tx?>(null) } // month 1 of an installment plan
+    var planMonths by remember { mutableIntStateOf(0) } // rows the original purchase has
     var type by remember { mutableStateOf(entry.type) }
     var expr by remember { mutableStateOf("") }
     var merchant by remember { mutableStateOf("") }
@@ -86,13 +88,15 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
     var picker by remember { mutableStateOf<String?>(null) } // cat | pay | to | date | time | installment
 
     LaunchedEffect(entry) {
-        val src = entry.editId?.let { dao.txOnce(it) } ?: entry.prefill
+        // an installment month opens as its whole purchase: month 1's date, the full price
+        val rows = entry.editId?.let { dao.purchaseRows(it) }.orEmpty()
+        val src = rows.firstOrNull()?.copy(amount = rows.sumOf { it.amount }) ?: entry.prefill
         if (src != null) {
-            if (entry.editId != null) original = src
+            if (entry.editId != null) { original = rows.first(); planMonths = rows.size }
             type = src.type
             expr = if (src.amount != 0L) abs(src.amount).toString() else ""
             merchant = src.merchant
-            memo = src.memo
+            memo = src.memo.takeUnless { autoInstallmentMemo.matches(it) }.orEmpty()
             categoryId = src.categoryId
             payId = src.paymentMethodId
             toPayId = src.toPaymentMethodId
@@ -139,10 +143,11 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
                 status = if (base.status == TxStatus.PENDING_REVIEW) TxStatus.CONFIRMED else base.status,
                 updatedAt = System.currentTimeMillis(),
             )
-            if (o != null) dao.update(tx) else {
-                val id = dao.insert(tx.copy(id = 0))
+            if (o == null) {
+                val id = dao.insertPurchase(tx.copy(id = 0))
                 prefill?.rawMessageId?.let { rid -> dao.rawMessage(rid).first()?.let { dao.update(it.copy(status = RawStatus.PARSED, txId = id)) } }
-            }
+            } else if (planMonths > 1 || tx.installmentMonths != o.installmentMonths) dao.replacePurchase(tx)
+            else dao.update(tx.copy(memo = tx.memo.ifBlank { o.memo.takeIf { autoInstallmentMemo.matches(it) }.orEmpty() }))
             if (pickedCategory && type != TxType.TRANSFER) Categorizer.learn(merchant, categoryId)
             if (type == TxType.EXPENSE) AutoInput.checkBudget()
         }

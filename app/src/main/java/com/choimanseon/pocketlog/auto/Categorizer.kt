@@ -63,7 +63,7 @@ object Categorizer {
         val cats = dao.categoriesOnce().filter { it.type == TxType.EXPENSE && !it.hidden }
         val id = runCatching { Ai.categorize(listOf(tx.merchant), cats)[tx.merchant] }.getOrNull() ?: return
         dao.putRule(RuleKind.CATEGORY, normalize(tx.merchant), id.toString())
-        dao.txOnce(tx.id)?.takeIf { it.categoryId == null }?.let { dao.update(it.copy(categoryId = id, updatedAt = System.currentTimeMillis())) }
+        if (dao.txOnce(tx.id)?.categoryId == null) dao.setCategory(tx.id, id)
     }
 
     /** When the user fixes a category, remember it for that merchant. */

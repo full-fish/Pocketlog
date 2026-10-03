@@ -99,6 +99,7 @@ class ClevImportTest {
         assertEquals(listOf("2026-01-05", "2026-02-05", "2026-03-05"), installments.map { it.occurredAt.toLocalDate().toString() })
         assertEquals(listOf("할부 1/3회차", "할부 2/3회차", "할부 3/3회차"), installments.map { it.memo })
         assertEquals(listOf(3, 3, 3), installments.map { it.installmentMonths })
+        assertEquals(listOf(null, 10L, 10L), installments.map { it.installmentOf }) // months 2..3 point to the purchase row
         assertEquals(50_000L, installments.sumOf { it.amount })
 
         // merchants seen twice, mostly in one category → rules; one-off merchants don't get one; block rules survive the import

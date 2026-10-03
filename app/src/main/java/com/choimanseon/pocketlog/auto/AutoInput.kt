@@ -38,6 +38,13 @@ fun isDuplicate(existing: Tx, amount: Long, at: Long, payId: Long?, merchant: St
         (existing.paymentMethodId == null || payId == null || existing.paymentMethodId == payId) &&
         similar(existing.merchant, merchant)
 
+/** What was paid for a purchase: all months of an installment plan added up. Months 2..n are not purchases. */
+suspend fun paid(tx: Tx): Long? = when {
+    tx.installmentOf != null -> null
+    tx.installmentMonths > 1 -> app.dao.purchaseTotal(tx.id)
+    else -> tx.amount
+}
+
 fun blockedBy(rules: List<Rule>, text: String, amount: Long?) = rules.any { r ->
     val keywordHit = r.pattern.isBlank() || text.contains(r.pattern, ignoreCase = true)
     val max = r.value.toLongOrNull()
@@ -113,7 +120,7 @@ object AutoInput {
         if (notMoneyInOrOut(p, pay, amount, nearby, text)) return null to RawStatus.IGNORED
 
         // a cancel looks exactly like its original payment, so it is matched in its own branch below
-        if (p.kind != MsgKind.CANCEL) nearby.firstOrNull { isDuplicate(it, amount, at, pay?.id, p.merchant) && amount > 0 }?.let {
+        if (p.kind != MsgKind.CANCEL) nearby.firstOrNull { amount > 0 && isDuplicate(it.copy(amount = paid(it) ?: return@firstOrNull false), amount, at, pay?.id, p.merchant) }?.let {
             return it.id to RawStatus.DUPLICATE
         }
 
@@ -124,7 +131,7 @@ object AutoInput {
         val tx: Tx = when (p.kind) {
             MsgKind.CANCEL -> {
                 val matches = dao.txAround(at - 31 * DAY, at + DAY).filter {
-                    it.type == TxType.EXPENSE && it.amount == amount &&
+                    it.type == TxType.EXPENSE && paid(it) == amount &&
                         (it.paymentMethodId == null || pay == null || it.paymentMethodId == pay.id) && similar(it.merchant, p.merchant)
                 }
                 val original = matches.firstOrNull { it.status != TxStatus.CANCELED }
@@ -132,12 +139,12 @@ object AutoInput {
                 matches.firstOrNull { it.status == TxStatus.CANCELED && System.currentTimeMillis() - it.updatedAt < 10 * MIN }
                     ?.takeIf { original == null }?.let { return it.id to RawStatus.DUPLICATE }
                 if (original != null) {
-                    dao.update(original.copy(status = TxStatus.CANCELED, updatedAt = System.currentTimeMillis()))
+                    dao.setStatus(original.id, TxStatus.CANCELED)
                     return original.id to RawStatus.PARSED
                 }
                 // partial cancel or the original was never recorded: a refund lowers spending
                 val cat = dao.txAround(at - 31 * DAY, at).firstOrNull { similar(it.merchant, p.merchant) && it.categoryId != null }?.categoryId
-                base.copy(amount = -amount, memo = "결제 취소", categoryId = cat)
+                base.copy(amount = -amount, memo = "결제 취소", categoryId = cat, installmentMonths = 0)
             }
             MsgKind.DEPOSIT -> base.copy(type = TxType.INCOME, categoryId = Categorizer.categorize(p.merchant, TxType.INCOME))
             MsgKind.WITHDRAW, MsgKind.SPEND -> base.copy(categoryId = Categorizer.categorize(p.merchant, TxType.EXPENSE))
@@ -147,8 +154,8 @@ object AutoInput {
             else t
         }
 
-        val id = dao.insert(tx)
-        val saved = tx.copy(id = id)
+        val id = dao.insertPurchase(tx)
+        val saved = tx.copy(id = id) // the whole purchase, also for an installment plan
         val category = saved.categoryId?.let { c -> dao.categoriesOnce().firstOrNull { it.id == c } }
         if (saved.type != TxType.TRANSFER) Notify.saved(saved, category, saved.status == TxStatus.PENDING_REVIEW)
         if (saved.type == TxType.EXPENSE && saved.categoryId == null) app.scope.launch { Categorizer.categorizeWithAi(saved) }
