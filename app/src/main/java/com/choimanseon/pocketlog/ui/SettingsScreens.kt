@@ -446,7 +446,7 @@ fun DataScreen(nav: Nav) {
 
     PageScaffold("백업 · 복구", onBack = nav::pop) {
         Text(
-            "휴대폰 설정의 Google 백업이 켜져 있으면 앱 데이터는 자동으로 백업돼요. 아래 백업 파일은 비밀번호로 암호화해서 원하는 곳에 저장해요.",
+            "휴대폰 설정의 Google 백업이 켜져 있으면 내역과 설정이 하루 한 번쯤 자동으로 백업되고, 앱을 다시 설치하면 돌아와요 (스크린샷 원본은 빼고). 아래 백업 파일은 비밀번호로 암호화해서 원하는 곳에 저장해요.",
             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         )
         ListRow("백업 파일 만들기", "암호화된 .plbak 파일로 저장해요") { create.launch("pocketlog-${LocalDate.now()}.plbak") }

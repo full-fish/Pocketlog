@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Google auto backup keeps at most 25MB per app and stops entirely past that: leave the screenshot copies out so the database always fits. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="scans" />
+    </cloud-backup>
+</data-extraction-rules>
