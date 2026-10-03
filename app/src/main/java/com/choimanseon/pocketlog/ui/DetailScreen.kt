@@ -1,0 +1,212 @@
+package com.choimanseon.pocketlog.ui
+
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
+import com.choimanseon.pocketlog.ai.Ai
+import com.choimanseon.pocketlog.ai.Scan
+import com.choimanseon.pocketlog.app
+import com.choimanseon.pocketlog.auto.AutoInput
+import com.choimanseon.pocketlog.auto.CardParser
+import com.choimanseon.pocketlog.data.RawMessage
+import com.choimanseon.pocketlog.data.RawStatus
+import com.choimanseon.pocketlog.data.Tx
+import com.choimanseon.pocketlog.data.TxSource
+import com.choimanseon.pocketlog.data.TxStatus
+import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.num
+import com.choimanseon.pocketlog.domain.signedAmount
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.format.DateTimeFormatter
+
+@Composable
+fun DetailScreen(id: Long, nav: Nav) {
+    val dao = app.dao
+    val tx by rememberFlow<Tx?>(null, id) { dao.tx(id) }
+    val splits by rememberFlow(emptyList(), id) { dao.splitsOf(id) }
+    val cats by rememberFlow(emptyList()) { dao.categories() }
+    val pays by rememberFlow(emptyList()) { dao.payMethods() }
+    val raw by rememberFlow<RawMessage?>(null, tx?.rawMessageId) { dao.rawMessage(tx?.rawMessageId ?: -1) }
+    val job by rememberFlow(null, tx?.scanJobId) { dao.scanJob(tx?.scanJobId ?: -1) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    val t = tx
+
+    PageScaffold("내역", onBack = nav::pop) {
+        if (t == null || t.deletedAt != null) {
+            EmptyState("🗑️", "삭제된 내역이에요")
+            return@PageScaffold
+        }
+        val catMap = cats.associateBy { it.id }
+        val payMap = pays.associateBy { it.id }
+        val cat = t.categoryId?.let { catMap[it] }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                CategoryIcon(cat, 64.dp)
+                Text(t.merchant.ifBlank { cat?.name ?: "내역" }, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    signedAmount(t) + "원", style = MaterialTheme.typography.displaySmall, color = amountColor(t),
+                    textDecoration = if (t.status == TxStatus.CANCELED) TextDecoration.LineThrough else null,
+                )
+                when (t.status) {
+                    TxStatus.CANCELED -> Tag("결제 취소됨", pal.sub)
+                    TxStatus.PENDING_REVIEW -> Tag("확인 필요", pal.warn, pal.warn.copy(alpha = 0.12f))
+                    else -> Unit
+                }
+            }
+            PCard(Modifier.padding(horizontal = 16.dp)) {
+                InfoRow("날짜", t.occurredAt.fmt(DateTimeFormatter.ofPattern("yyyy년 M월 d일 (E) HH:mm", java.util.Locale.KOREAN)))
+                InfoRow("종류", when (t.type) { TxType.EXPENSE -> "지출"; TxType.INCOME -> "수입"; TxType.TRANSFER -> "이체" })
+                if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.let { c -> "${c.emoji} ${c.parentId?.let { catMap[it]?.name + " › " }.orEmpty()}${c.name}" } ?: "미분류")
+                InfoRow(if (t.type == TxType.TRANSFER) "보낸 곳" else "결제수단", t.paymentMethodId?.let { payMap[it]?.name } ?: "-")
+                if (t.type == TxType.TRANSFER) InfoRow("받은 곳", t.toPaymentMethodId?.let { payMap[it]?.name } ?: "-")
+                if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월")
+                t.originalAmount?.let { InfoRow("외화", it) }
+                if (t.memo.isNotBlank()) InfoRow("메모", t.memo)
+                InfoRow("기록 방법", if (t.source == TxSource.IMPORT) "똑똑가계부에서 가져옴" else sourceLabel(t.source)?.let { "$it 자동 기록" } ?: "직접 입력")
+            }
+            if (splits.isNotEmpty()) {
+                SectionHeader("품목 ${splits.size}개")
+                PCard(Modifier.padding(horizontal = 16.dp)) {
+                    splits.forEach { s ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(s.categoryId?.let { catMap[it]?.emoji } ?: "🧾")
+                            Text(s.name + if (s.quantity > 1) " ×${s.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(start = 10.dp))
+                            Text(num(s.amount), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+            raw?.let { m ->
+                SectionHeader("원문")
+                PCard(Modifier.padding(horizontal = 16.dp)) {
+                    if (m.title.isNotBlank()) Text(m.title, style = MaterialTheme.typography.labelMedium, color = pal.sub)
+                    Text(m.body, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                }
+            }
+            job?.let { j ->
+                SectionHeader("스크린샷")
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Scan.imageFiles(j).forEach { Thumb(it, Modifier.width(120.dp).height(220.dp)) }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SoftButton("삭제", { confirmDelete = true }, Modifier.weight(1f), pal.danger)
+            SoftButton("복제", {
+                app.scope.launch {
+                    val now = System.currentTimeMillis()
+                    dao.insert(t.copy(id = 0, occurredAt = now, createdAt = now, updatedAt = now, source = TxSource.MANUAL, rawMessageId = null, scanJobId = null, status = TxStatus.CONFIRMED))
+                }
+                nav.toast("지금 시간으로 복제했어요")
+            }, Modifier.weight(1f))
+            SoftButton("수정", { nav.entry = Entry(editId = t.id) }, Modifier.weight(1f), pal.brand)
+        }
+        if (t.status == TxStatus.PENDING_REVIEW) PrimaryButton("확인했어요", {
+            app.scope.launch { dao.update(t.copy(status = TxStatus.CONFIRMED, updatedAt = System.currentTimeMillis())) }
+        }, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp))
+    }
+    if (confirmDelete) ConfirmDialog("이 내역을 삭제할까요?", "삭제 후 바로 되돌릴 수 있어요.", "삭제", danger = true, onDismiss = { confirmDelete = false }) {
+        confirmDelete = false
+        app.scope.launch { dao.softDelete(id) }
+        nav.pop()
+        nav.undo("삭제했어요") { dao.undoDelete(id) }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = pal.sub, modifier = Modifier.width(88.dp))
+        Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun Thumb(file: File, modifier: Modifier = Modifier) {
+    var bmp by remember(file) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(file) {
+        bmp = withContext(Dispatchers.IO) {
+            runCatching {
+                val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                BitmapFactory.decodeFile(file.path, opts)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(pal.surface)) {
+        bmp?.let { Image(it, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+    }
+}
+
+/** 확인 필요: low-confidence transactions and messages the parsers could not read. */
+@Composable
+fun ReviewScreen(nav: Nav) {
+    val dao = app.dao
+    val pending by rememberFlow(emptyList()) { dao.pendingTx() }
+    val failed by rememberFlow(emptyList()) { dao.failedMessages() }
+    val cats by rememberFlow(emptyList()) { dao.categories() }
+    val pays by rememberFlow(emptyList()) { dao.payMethods() }
+    val catMap = cats.associateBy { it.id }
+    val payMap = pays.associateBy { it.id }
+
+    PageScaffold("확인 필요", onBack = nav::pop) {
+        if (pending.isEmpty() && failed.isEmpty()) EmptyState("✅", "확인할 내역이 없어요")
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
+            if (pending.isNotEmpty()) item { SectionHeader("확인이 필요한 기록") }
+            items(pending, key = { it.id }) { tx ->
+                Column {
+                    TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) }
+                    Row(Modifier.padding(start = 72.dp, end = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("맞아요") { app.scope.launch { dao.update(tx.copy(status = TxStatus.CONFIRMED, updatedAt = System.currentTimeMillis())) } }
+                        Chip("수정") { nav.entry = Entry(editId = tx.id) }
+                        Chip("삭제") { app.scope.launch { dao.softDelete(tx.id) }; nav.undo("삭제했어요") { dao.undoDelete(tx.id) } }
+                    }
+                }
+            }
+            if (failed.isNotEmpty()) item { SectionHeader("읽지 못한 알림") }
+            items(failed, key = { "m${it.id}" }) { m ->
+                PCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text(m.receivedAt.fmt(DateTimeFormatter.ofPattern("M/d HH:mm")) + " · " + m.title, style = MaterialTheme.typography.labelMedium, color = pal.sub)
+                    Text(m.body, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("직접 입력") {
+                            val p = CardParser.parse(m.title, m.body, m.receivedAt)
+                            nav.entry = Entry(prefill = Tx(
+                                amount = p?.amount ?: 0, occurredAt = p?.at ?: m.receivedAt, merchant = p?.merchant.orEmpty(),
+                                source = if (m.channel == "SMS") TxSource.SMS else TxSource.PUSH, rawMessageId = m.id,
+                            ))
+                        }
+                        if (Ai.usable()) Chip("AI로 다시 읽기") {
+                            app.scope.launch {
+                                val ok = AutoInput.retry(m)
+                                nav.toast(if (ok) "기록했어요" else "AI도 읽지 못했어요. 직접 입력해 주세요")
+                            }
+                        }
+                        Chip("무시") { app.scope.launch { dao.update(m.copy(status = RawStatus.IGNORED)) } }
+                    }
+                }
+            }
+        }
+    }
+}
