@@ -20,7 +20,7 @@ import java.time.LocalDate
 class AiError(val code: Int, message: String) : Exception(message)
 
 /**
- * Talks to our Cloudflare Worker (server/), never to Anthropic directly: the API key must not ship in the APK.
+ * Talks to our Cloudflare Worker (server/), never to OpenAI directly: the API key must not ship in the APK.
  * Request/response shapes are defined in server/src/index.ts.
  */
 object Ai {

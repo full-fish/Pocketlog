@@ -30,7 +30,7 @@ app/src/main/java/com/choimanseon/pocketlog/
   ai/        AI 프록시 호출, 스크린샷 분할·분석·저장
   ui/        Compose 화면 (홈·내역·분석·자산·입력·상세·스샷 검토·설정·잠금)
   Security.kt  PIN 해시, 암호화 백업
-server/      Cloudflare Worker (Claude 호출)
+server/      Cloudflare Worker (OpenAI 호출)
 ```
 
 ## 테스트

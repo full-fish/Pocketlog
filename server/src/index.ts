@@ -1,17 +1,23 @@
-// Pocketlog AI proxy: keeps the Anthropic API key off the phone.
+// Pocketlog AI proxy: keeps the OpenAI API key off the phone.
 // The app (app/src/main/java/.../ai/Ai.kt) calls POST /scan, /parse, /categorize with header x-app-token.
 // ponytail: one shared app token; per-user quotas (KV/D1) come with the P1 store release.
-import Anthropic from "@anthropic-ai/sdk";
 
 interface Env {
-  ANTHROPIC_API_KEY: string;
+  OPENAI_API_KEY: string;
   APP_TOKEN: string;
 }
 
-const MODEL = "claude-opus-5-5";
+const MODEL = "gpt-5.5";
 
 class BadInput extends Error {}
 class Refused extends Error {}
+class Upstream extends Error {
+  constructor(readonly status: number) {
+    super(`upstream ${status}`);
+  }
+}
+
+type Content = ({ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } })[];
 
 const nullable = (type: string) => ({ type: [type, "null"] });
 
@@ -136,29 +142,39 @@ function categoriesText(body: Body): string {
   return cats.map((c: any) => `${String(c.id)}: ${String(c.name)}`).join("\n");
 }
 
-async function ask(client: Anthropic, path: string, system: string, content: Anthropic.Beta.Messages.BetaContentBlockParam[], schema: object) {
-  const res = await client.beta.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: { effort: "low", format: { type: "json_schema", schema: schema as Record<string, unknown> } },
-    system,
-    messages: [{ role: "user", content }],
+async function ask(env: Env, path: string, system: string, content: Content, schema: object) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      reasoning_effort: "low",
+      max_completion_tokens: 16000,
+      response_format: { type: "json_schema", json_schema: { name: "result", strict: true, schema } },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content },
+      ],
+    }),
   });
-  console.log(JSON.stringify({ path, stop: res.stop_reason, usage: res.usage }));
-  if (res.stop_reason === "refusal") throw new Refused();
-  const text = res.content.find((b) => b.type === "text");
-  if (!text || text.type !== "text") throw new Error("empty response");
-  return JSON.parse(text.text);
+  if (!res.ok) {
+    console.log(JSON.stringify({ path, status: res.status, error: await res.text() }));
+    throw new Upstream(res.status);
+  }
+  const data: any = await res.json();
+  const choice = data.choices?.[0];
+  console.log(JSON.stringify({ path, finish: choice?.finish_reason, usage: data.usage }));
+  if (choice?.message?.refusal) throw new Refused();
+  if (choice?.finish_reason !== "stop" || typeof choice.message?.content !== "string") throw new Error(`no answer: ${choice?.finish_reason}`);
+  return JSON.parse(choice.message.content);
 }
 
-async function scan(client: Anthropic, body: Body) {
+async function scan(env: Env, body: Body) {
   const images = body.images;
   if (!Array.isArray(images) || images.length === 0 || images.length > 8) throw new BadInput("images");
-  const content: Anthropic.Beta.Messages.BetaContentBlockParam[] = images.map((img: any) => {
+  const content: Content = images.map((img: any) => {
     if (!["image/jpeg", "image/png", "image/webp"].includes(img?.media_type) || typeof img?.data !== "string") throw new BadInput("image");
-    return { type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } };
+    return { type: "image_url", image_url: { url: `data:${img.media_type};base64,${img.data}`, detail: "high" } };
   });
   const hints = Array.isArray(body.hints) ? body.hints.slice(0, 30).map(String) : [];
   content.push({
@@ -166,20 +182,20 @@ async function scan(client: Anthropic, body: Body) {
     text: `today: ${String(body.today ?? new Date().toISOString().slice(0, 10))}\n\ncategories (id: name):\n${categoriesText(body)}` +
       (hints.length ? `\n\nuser hints (keyword → category):\n${hints.join("\n")}` : ""),
   });
-  return { result: await ask(client, "/scan", SCAN_SYSTEM, content, SCAN_SCHEMA) };
+  return { result: await ask(env, "/scan", SCAN_SYSTEM, content, SCAN_SCHEMA) };
 }
 
-async function parse(client: Anthropic, body: Body) {
+async function parse(env: Env, body: Body) {
   const text = body.text;
   if (typeof text !== "string" || text.length === 0 || text.length > 2000) throw new BadInput("text");
-  return ask(client, "/parse", PARSE_SYSTEM, [{ type: "text", text }], PARSE_SCHEMA);
+  return ask(env, "/parse", PARSE_SYSTEM, [{ type: "text", text }], PARSE_SCHEMA);
 }
 
-async function categorize(client: Anthropic, body: Body) {
+async function categorize(env: Env, body: Body) {
   const merchants = body.merchants;
   if (!Array.isArray(merchants) || merchants.length === 0 || merchants.length > 50) throw new BadInput("merchants");
   const text = `categories (id: name):\n${categoriesText(body)}\n\nmerchants:\n${merchants.map(String).join("\n")}`;
-  return ask(client, "/categorize", CATEGORIZE_SYSTEM, [{ type: "text", text }], CATEGORIZE_SCHEMA);
+  return ask(env, "/categorize", CATEGORIZE_SYSTEM, [{ type: "text", text }], CATEGORIZE_SCHEMA);
 }
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -194,23 +210,21 @@ export default {
     } catch {
       return json({ error: "invalid json" }, 400);
     }
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
     try {
       switch (new URL(req.url).pathname) {
         case "/scan":
-          return json(await scan(client, body));
+          return json(await scan(env, body));
         case "/parse":
-          return json(await parse(client, body));
+          return json(await parse(env, body));
         case "/categorize":
-          return json(await categorize(client, body));
+          return json(await categorize(env, body));
         default:
           return json({ error: "not found" }, 404);
       }
     } catch (e) {
       if (e instanceof BadInput) return json({ error: `invalid ${e.message}` }, 400);
       if (e instanceof Refused) return json({ error: "refused" }, 422);
-      if (e instanceof Anthropic.RateLimitError) return json({ error: "rate limited" }, 429);
-      if (e instanceof Anthropic.APIError) return json({ error: `upstream ${e.status}` }, 502);
+      if (e instanceof Upstream) return e.status === 429 ? json({ error: "rate limited" }, 429) : json({ error: e.message }, 502);
       throw e;
     }
   },

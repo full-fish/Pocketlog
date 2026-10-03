@@ -130,7 +130,7 @@ fun Root(nav: Nav) {
     nav.askScanConsent?.let { uris ->
         ConfirmDialog(
             title = "스크린샷을 AI로 분석할까요?",
-            text = "선택한 이미지가 AI 분석 서버(Anthropic Claude)로 전송돼요. 서버에는 저장하지 않고, 분석이 끝나면 바로 버려요. " +
+            text = "선택한 이미지가 AI 분석을 위해 OpenAI로 전송돼요. Pocketlog 서버에는 저장하지 않아요. OpenAI는 API로 받은 데이터를 학습에 쓰지 않고, 악용 감시를 위해 최대 30일 보관한 뒤 지워요. " +
                 "이미지에 주소·이름이 보이면 잘라서 보내도 돼요.\n\n설정 > AI에서 언제든 끌 수 있어요.",
             confirm = "동의하고 분석",
             onDismiss = { nav.askScanConsent = null },
