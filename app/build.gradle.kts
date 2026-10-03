@@ -68,6 +68,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.biometric:biometric:1.1.0")
+    // biometric pulls in fragment 1.2.5, whose FragmentActivity crashes every permission request and file picker
+    // ("Can only use lower 16 bits for requestCode"); MainActivity is a FragmentActivity for BiometricPrompt
+    implementation("androidx.fragment:fragment-ktx:1.9.1")
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
