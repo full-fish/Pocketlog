@@ -11,8 +11,13 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.choimanseon.pocketlog.R
 
 /** Design tokens from 기획서 §6. Expense amounts use `text`; red is only for over-budget and destructive actions. */
 @Immutable
@@ -51,22 +56,33 @@ val LocalPalette = staticCompositionLocalOf { LightPalette }
 val pal: Palette
     @Composable @ReadOnlyComposable get() = LocalPalette.current
 
+// Pretendard (기획서 §6): one variable font file, so every weight is the same file at a different axis value.
+private fun pretendard(weight: FontWeight) =
+    Font(R.font.pretendard, weight, variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight)))
+
+private val Pretendard = FontFamily(listOf(FontWeight.Normal, FontWeight.Medium, FontWeight.SemiBold, FontWeight.Bold).map(::pretendard))
+
 // Tabular figures so amounts line up in columns and don't jiggle while animating.
-private const val TNUM = "tnum"
+private fun TextStyle.p(size: Int, weight: FontWeight? = null) =
+    copy(fontFamily = Pretendard, fontSize = size.sp, fontWeight = weight ?: fontWeight, fontFeatureSettings = "tnum")
 
 private val typography = Typography().let { t ->
     Typography(
-        displaySmall = t.displaySmall.copy(fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp, fontFeatureSettings = TNUM),
-        headlineSmall = t.headlineSmall.copy(fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFeatureSettings = TNUM),
-        titleLarge = t.titleLarge.copy(fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFeatureSettings = TNUM),
-        titleMedium = t.titleMedium.copy(fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TNUM),
-        titleSmall = t.titleSmall.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TNUM),
-        bodyLarge = t.bodyLarge.copy(fontSize = 16.sp, fontFeatureSettings = TNUM),
-        bodyMedium = t.bodyMedium.copy(fontSize = 15.sp, fontFeatureSettings = TNUM),
-        bodySmall = t.bodySmall.copy(fontSize = 13.sp, fontFeatureSettings = TNUM),
-        labelLarge = t.labelLarge.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TNUM),
-        labelMedium = t.labelMedium.copy(fontSize = 13.sp, fontFeatureSettings = TNUM),
-        labelSmall = t.labelSmall.copy(fontSize = 11.sp, fontFeatureSettings = TNUM),
+        displayLarge = t.displayLarge.copy(fontFamily = Pretendard),
+        displayMedium = t.displayMedium.copy(fontFamily = Pretendard),
+        displaySmall = t.displaySmall.p(34, FontWeight.Bold).copy(lineHeight = 40.sp, letterSpacing = (-0.5).sp),
+        headlineLarge = t.headlineLarge.copy(fontFamily = Pretendard),
+        headlineMedium = t.headlineMedium.copy(fontFamily = Pretendard),
+        headlineSmall = t.headlineSmall.p(24, FontWeight.Bold),
+        titleLarge = t.titleLarge.p(21, FontWeight.Bold),
+        titleMedium = t.titleMedium.p(17, FontWeight.SemiBold),
+        titleSmall = t.titleSmall.p(15, FontWeight.SemiBold),
+        bodyLarge = t.bodyLarge.p(16),
+        bodyMedium = t.bodyMedium.p(15),
+        bodySmall = t.bodySmall.p(13),
+        labelLarge = t.labelLarge.p(15, FontWeight.SemiBold),
+        labelMedium = t.labelMedium.p(13),
+        labelSmall = t.labelSmall.p(11),
     )
 }
 
