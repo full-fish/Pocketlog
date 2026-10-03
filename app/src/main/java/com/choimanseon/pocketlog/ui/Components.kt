@@ -6,6 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -236,7 +237,10 @@ fun amountColor(tx: Tx): Color = when {
 }
 
 @Composable
-fun TxRow(tx: Tx, cat: Category?, pays: Map<Long, PayMethod>, showDate: Boolean = false, onClick: () -> Unit) {
+fun TxRow(
+    tx: Tx, cat: Category?, pays: Map<Long, PayMethod>, showDate: Boolean = false,
+    selected: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit,
+) {
     val pay = tx.paymentMethodId?.let { pays[it] }
     val sub = buildList {
         add(tx.occurredAt.fmt(if (showDate) DateTimeFormatter.ofPattern("M/d HH:mm") else timeFmt))
@@ -245,10 +249,13 @@ fun TxRow(tx: Tx, cat: Category?, pays: Map<Long, PayMethod>, showDate: Boolean 
         if (tx.memo.isNotBlank()) add(tx.memo)
     }.joinToString(" · ")
     Row(
-        Modifier.fillMaxWidth().background(pal.bg).clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().background(if (selected) pal.brandSoft else pal.bg)
+            .combinedClickable(onLongClick = onLongClick, onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (tx.type == TxType.TRANSFER) {
+        if (selected) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(pal.brand), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Check, "선택됨", tint = Color.White) }
+        } else if (tx.type == TxType.TRANSFER) {
             Box(Modifier.size(40.dp).clip(CircleShape).background(pal.surface), contentAlignment = Alignment.Center) { Text("↔", fontSize = 18.sp, color = pal.sub) }
         } else CategoryIcon(cat)
         Spacer(Modifier.width(12.dp))

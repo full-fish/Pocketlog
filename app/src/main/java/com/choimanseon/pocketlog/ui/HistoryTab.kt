@@ -1,8 +1,10 @@
 package com.choimanseon.pocketlog.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -11,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +21,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -61,9 +66,46 @@ fun HistoryTab(nav: Nav) {
     val payMap = pays.associateBy { it.id }
     val shown = txs.filter { typeFilters[filter] == null || it.type == typeFilters[filter] }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            PeriodSwitcher(period.label(today), { offset--; day = null }, { offset++; day = null }, Modifier.weight(1f))
+    // 다중 선택 (기획서 §4.4): long-press a row, then change the category of or delete them all
+    var selected by remember { mutableStateOf(emptySet<Long>()) }
+    var pickCategory by remember { mutableStateOf<TxType?>(null) }
+    val selecting = selected.isNotEmpty()
+    LaunchedEffect(offset, filter, calendar, day) { selected = emptySet() }
+    BackHandler(selecting) { selected = emptySet() }
+    fun toggle(id: Long) { selected = if (id in selected) selected - id else selected + id }
+    fun move(months: Int) { offset += months; day = null }
+    fun deleteSelected() {
+        val ids = selected.toList()
+        selected = emptySet()
+        app.scope.launch { ids.forEach { app.dao.softDelete(it) } }
+        nav.undo("${ids.size}건을 삭제했어요") { ids.forEach { app.dao.undoDelete(it) } }
+    }
+    fun recategorize(categoryId: Long?) {
+        val chosen = txs.filter { it.id in selected }
+        selected = emptySet()
+        // not learned as merchant rules: a batch is usually about the occasion (a trip), not the merchants
+        app.scope.launch { chosen.forEach { app.dao.setCategory(it.id, categoryId) } }
+        nav.undo("${chosen.size}건의 카테고리를 바꿨어요") { chosen.forEach { app.dao.setCategory(it.id, it.categoryId) } }
+    }
+
+    // swipe left/right anywhere a row doesn't take the drag itself (rows swipe to delete / duplicate)
+    val swipe = with(LocalDensity.current) { 72.dp.toPx() }
+    Column(Modifier.fillMaxSize().statusBarsPadding().pointerInput(selecting) {
+        if (selecting) return@pointerInput
+        var dx = 0f
+        detectHorizontalDragGestures(onDragStart = { dx = 0f }, onDragEnd = { if (kotlin.math.abs(dx) > swipe) move(if (dx < 0) 1 else -1) }) { _, d -> dx += d }
+    }) {
+        if (selecting) Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp).height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { selected = emptySet() }) { Icon(Icons.Rounded.Close, "선택 취소") }
+            Text("${selected.size}건 선택", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                val types = txs.filter { it.id in selected }.map { it.type }.toSet()
+                if (types.size == 1 && TxType.TRANSFER !in types) pickCategory = types.single()
+                else nav.toast(if (TxType.TRANSFER in types) "이체는 카테고리가 없어요" else "지출과 수입은 따로 골라 주세요")
+            }) { Text("카테고리") }
+            TextButton(onClick = ::deleteSelected) { Text("삭제", color = pal.danger) }
+        } else Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            PeriodSwitcher(period.label(today), { move(-1) }, { move(1) }, Modifier.weight(1f))
             IconButton(onClick = { nav.push(Screen.Search) }) { Icon(Icons.Rounded.Search, "검색") }
             IconButton(onClick = { calendar = !calendar }) {
                 Icon(if (calendar) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.CalendarMonth, if (calendar) "리스트로 보기" else "달력으로 보기")
@@ -83,7 +125,7 @@ fun HistoryTab(nav: Nav) {
                 item { Calendar(period, daily, day, DayOfWeek.of(app.prefs.weekStart)) { day = if (day == it) null else it } }
                 val list = shown.filter { day == null || it.occurredAt.toLocalDate() == day }
                 if (day != null) item { DayHeader(day!!, list) }
-                items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, showDate = day == null) }
+                items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, day == null, tx.id in selected, selecting) { toggle(tx.id) } }
             }
         } else {
             val groups = remember(shown) { shown.groupBy { it.occurredAt.toLocalDate() }.toSortedMap(compareByDescending { it }) }
@@ -91,11 +133,12 @@ fun HistoryTab(nav: Nav) {
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
                 groups.forEach { (date, list) ->
                     item(key = "h$date") { DayHeader(date, list) }
-                    items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav) }
+                    items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, false, tx.id in selected, selecting) { toggle(tx.id) } }
                 }
             }
         }
     }
+    pickCategory?.let { type -> CategoryPickerSheet(type, cats, null, onDismiss = { pickCategory = null }) { pickCategory = null; recategorize(it) } }
 }
 
 @Composable
@@ -109,14 +152,18 @@ private fun DayHeader(date: LocalDate, list: List<Tx>) {
     }
 }
 
-/** Swipe left to delete (with undo), right to duplicate as a new entry right now. */
+/** Swipe left to delete (with undo), right to duplicate as a new entry right now. Long-press starts selecting. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SwipeTxRow(tx: Tx, cats: Map<Long, Category>, pays: Map<Long, PayMethod>, nav: Nav, showDate: Boolean = false) {
+private fun SwipeTxRow(
+    tx: Tx, cats: Map<Long, Category>, pays: Map<Long, PayMethod>, nav: Nav,
+    showDate: Boolean, selected: Boolean, selecting: Boolean, onSelect: () -> Unit,
+) {
     val state = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
     SwipeToDismissBox(
         state = state,
+        gesturesEnabled = !selecting,
         backgroundContent = {
             val deleting = state.dismissDirection == SwipeToDismissBoxValue.EndToStart
             Box(
@@ -139,7 +186,9 @@ fun SwipeTxRow(tx: Tx, cats: Map<Long, Category>, pays: Map<Long, PayMethod>, na
             scope.launch { state.snapTo(SwipeToDismissBoxValue.Settled) }
         },
     ) {
-        TxRow(tx, tx.categoryId?.let { cats[it] }, pays, showDate) { nav.push(Screen.Detail(tx.id)) }
+        TxRow(tx, tx.categoryId?.let { cats[it] }, pays, showDate, selected, onLongClick = onSelect) {
+            if (selecting) onSelect() else nav.push(Screen.Detail(tx.id))
+        }
     }
 }
 
