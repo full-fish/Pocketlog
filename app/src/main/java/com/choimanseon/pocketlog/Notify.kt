@@ -50,7 +50,7 @@ object Notify {
         }
         val n = NotificationCompat.Builder(app, CH_SAVED)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle("${category?.emoji ?: "🧾"} $what ${won(tx.amount)}" + if (tx.installmentMonths > 1) " · ${tx.installmentMonths}개월 할부" else "")
+            .setContentTitle("$what ${won(tx.amount)}" + if (tx.installmentMonths > 1) " · ${tx.installmentMonths}개월 할부" else "")
             .setContentText(text)
             .setContentIntent(open(tx.id))
             .setAutoCancel(true)

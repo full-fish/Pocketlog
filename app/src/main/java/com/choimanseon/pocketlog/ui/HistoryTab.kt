@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -129,7 +130,7 @@ fun HistoryTab(nav: Nav) {
             }
         } else {
             val groups = remember(shown) { shown.groupBy { it.occurredAt.toLocalDate() }.toSortedMap(compareByDescending { it }) }
-            if (groups.isEmpty()) EmptyState("🗂️", "이 기간에는 내역이 없어요", "+ 버튼으로 기록해 보세요")
+            if (groups.isEmpty()) EmptyState(Icons.Rounded.Inbox, "이 기간에는 내역이 없어요", "+ 버튼으로 기록해 보세요")
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
                 groups.forEach { (date, list) ->
                     item(key = "h$date") { DayHeader(date, list) }
@@ -256,7 +257,7 @@ fun SearchScreen(nav: Nav) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), shape = RoundedCornerShape(14.dp),
         )
         FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip(cat?.let { catMap[it]?.let { c -> "${c.emoji} ${c.name}" } } ?: "카테고리 전체", selected = cat != null) { picking = true }
+            Chip(cat?.let { catMap[it]?.name } ?: "카테고리 전체", selected = cat != null) { picking = true }
             OutlinedTextField(
                 value = min, onValueChange = { min = it.filter(Char::isDigit) }, singleLine = true, placeholder = { Text("최소 금액") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(120.dp),
@@ -266,7 +267,7 @@ fun SearchScreen(nav: Nav) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(120.dp),
             )
         }
-        if (q.isBlank() && cat == null && min.isBlank() && max.isBlank()) EmptyState("🔎", "가맹점이나 메모로 찾아보세요", "전체 기간에서 찾아요")
+        if (q.isBlank() && cat == null && min.isBlank() && max.isBlank()) EmptyState(Icons.Rounded.Search, "가맹점이나 메모로 찾아보세요", "전체 기간에서 찾아요")
         else LazyColumn(Modifier.weight(1f)) {
             item { Text("${results.size}건", style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
             items(results, key = { it.id }) { tx ->

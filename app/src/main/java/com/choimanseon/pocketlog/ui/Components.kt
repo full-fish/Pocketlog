@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,7 +46,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.PayKind
@@ -108,9 +108,9 @@ fun SectionHeader(title: String, action: String? = null, onAction: () -> Unit = 
 }
 
 @Composable
-fun EmptyState(emoji: String, title: String, body: String = "", modifier: Modifier = Modifier) {
+fun EmptyState(icon: ImageVector, title: String, body: String = "", modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(vertical = 48.dp, horizontal = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(emoji, fontSize = 40.sp)
+        Icon(icon, null, Modifier.size(40.dp), tint = pal.faint)
         Spacer(Modifier.height(12.dp))
         Text(title, style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
         if (body.isNotEmpty()) Text(body, style = MaterialTheme.typography.bodySmall, color = pal.sub, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
@@ -201,7 +201,7 @@ fun CategoryIcon(c: Category?, size: Dp = 40.dp, selected: Boolean = false) {
         Modifier.size(size).clip(CircleShape).background(color.copy(alpha = if (pal.dark) 0.28f else 0.16f))
             .then(if (selected) Modifier.border(2.dp, pal.brand, CircleShape) else Modifier),
         contentAlignment = Alignment.Center,
-    ) { Text(c?.emoji ?: "🧾", fontSize = (size.value * 0.46f).sp) }
+    ) { Icon(categoryIcon(c?.icon), c?.name, Modifier.size(size * 0.5f), tint = c?.let { Color(it.color) } ?: pal.sub) }
 }
 
 fun payIcon(kind: PayKind?): ImageVector = when (kind) {
@@ -256,7 +256,7 @@ fun TxRow(
         if (selected) {
             Box(Modifier.size(40.dp).clip(CircleShape).background(pal.brand), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Check, "선택됨", tint = Color.White) }
         } else if (tx.type == TxType.TRANSFER) {
-            Box(Modifier.size(40.dp).clip(CircleShape).background(pal.surface), contentAlignment = Alignment.Center) { Text("↔", fontSize = 18.sp, color = pal.sub) }
+            Box(Modifier.size(40.dp).clip(CircleShape).background(pal.surface), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.SwapHoriz, "이체", tint = pal.sub) }
         } else CategoryIcon(cat)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

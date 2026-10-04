@@ -1,5 +1,6 @@
 package com.choimanseon.pocketlog.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -58,7 +59,7 @@ data class Category(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val type: TxType,
     val name: String,
-    val emoji: String,
+    @ColumnInfo(name = "emoji") val icon: String, // a [com.choimanseon.pocketlog.ui.CategoryIcons] key; the column held emoji until DB version 3
     val color: Long,
     val parentId: Long? = null,
     val sort: Int = 0,

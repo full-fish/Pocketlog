@@ -163,7 +163,7 @@ object ClevImport {
                 id = r.getValue("_id").toLong() + offset,
                 type = type,
                 name = name,
-                emoji = emojis[name] ?: parentName?.let { emojis[it] } ?: "📦",
+                icon = icons[name] ?: parentName?.let { icons[it] } ?: "box",
                 color = colorOf[parent ?: r.getValue("_id")] ?: CategoryColors.last(),
                 parentId = parent?.toLong()?.plus(offset),
                 sort = r.getValue("${p}sort").toIntOrNull() ?: 0,
@@ -206,20 +206,20 @@ object ClevImport {
             .map { (merchant, cat, _) -> Rule(kind = RuleKind.CATEGORY, pattern = merchant, value = cat.toString()) }
 
     // 똑똑가계부 default category names (plus a few common custom ones)
-    private val emojis = mapOf(
-        "식비" to "🍚", "외식" to "🍽️", "집밥" to "🍳", "식재료" to "🥬",
-        "문화생활비" to "🎬", "영화/공연" to "🎬", "게임/어플" to "🎮", "음악" to "🎵", "도서" to "📚", "여행" to "✈️", "취미" to "🎨", "보드게임" to "🎲", "앵무새" to "🦜",
-        "주거생활비" to "🏠", "집세/관리비" to "🏠", "청소/세탁" to "🧺", "통신비" to "📱", "생필품" to "🧻", "생활서비스" to "🛠️", "생활세금" to "🧾", "주방용품" to "🍳",
-        "건강관리비" to "💊", "운동/다이어트" to "🏃", "병원비/약값" to "💊", "요양비" to "🏥", "건강식품" to "💊",
-        "교통비" to "🚇", "대중교통" to "🚇", "택시비" to "🚕", "장거리경비" to "🚄", "렌트비" to "🚗",
-        "차량유지비" to "🚗", "유류비" to "⛽", "정비/세차" to "🔧", "주차/통행" to "🅿️", "자동차보험" to "🚗",
-        "쇼핑비" to "🛍️", "의류/잡화" to "👕", "전자제품" to "💻", "가구" to "🛋️",
-        "미용비" to "💇", "헤어샵" to "💇", "화장품" to "💄", "뷰티관리" to "💅",
-        "교육비" to "📚", "학비" to "🎓", "교재비" to "📖", "육아" to "🧸",
-        "사회생활비" to "🎁", "경조사비" to "💐", "선물/용돈" to "🎁", "모임회비" to "👥", "기부" to "🤝",
-        "과식" to "🍺", "술값" to "🍺", "야식" to "🍗", "간식" to "🍪",
-        "금융보험비" to "🏦", "금융이자" to "🏦", "수수료" to "🏦", "보장보험" to "🛡️",
-        "저축" to "💰", "예금/적금" to "💰", "주식/펀드" to "📈", "저축보험" to "💰", "기타" to "📦", "개발 구독비" to "💻",
-        "근로소득" to "💼", "급여" to "💰", "보너스" to "🎉", "금융소득" to "🏦", "이자" to "🏦", "배당금" to "📈", "중고판매" to "📦", "용돈" to "🧧",
+    private val icons = mapOf(
+        "식비" to "rice_bowl", "외식" to "restaurant", "집밥" to "egg", "식재료" to "grocery",
+        "문화생활비" to "movie", "영화/공연" to "movie", "게임/어플" to "game", "음악" to "music", "도서" to "book", "여행" to "flight", "취미" to "palette", "보드게임" to "casino", "앵무새" to "pets",
+        "주거생활비" to "home", "집세/관리비" to "home", "청소/세탁" to "laundry", "통신비" to "phone", "생필품" to "soap", "생활서비스" to "handyman", "생활세금" to "receipt", "주방용품" to "kitchen",
+        "건강관리비" to "medication", "운동/다이어트" to "run", "병원비/약값" to "medication", "요양비" to "hospital", "건강식품" to "medication",
+        "교통비" to "subway", "대중교통" to "subway", "택시비" to "taxi", "장거리경비" to "train", "렌트비" to "car",
+        "차량유지비" to "car", "유류비" to "gas", "정비/세차" to "car_repair", "주차/통행" to "parking", "자동차보험" to "shield",
+        "쇼핑비" to "bag", "의류/잡화" to "clothes", "전자제품" to "laptop", "가구" to "chair",
+        "미용비" to "cut", "헤어샵" to "cut", "화장품" to "brush", "뷰티관리" to "spa",
+        "교육비" to "book", "학비" to "school", "교재비" to "book", "육아" to "toys",
+        "사회생활비" to "gift", "경조사비" to "flower", "선물/용돈" to "gift", "모임회비" to "groups", "기부" to "handshake",
+        "과식" to "fastfood", "술값" to "bar", "야식" to "dinner", "간식" to "cookie",
+        "금융보험비" to "bank", "금융이자" to "bank", "수수료" to "bank", "보장보험" to "shield",
+        "저축" to "savings", "예금/적금" to "savings", "주식/펀드" to "chart", "저축보험" to "savings", "기타" to "box", "개발 구독비" to "code",
+        "근로소득" to "work", "급여" to "payments", "보너스" to "celebration", "금융소득" to "bank", "이자" to "bank", "배당금" to "chart", "중고판매" to "sell", "용돈" to "redeem",
     )
 }

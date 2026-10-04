@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.*
@@ -127,7 +128,7 @@ fun HomeTab(nav: Nav) {
                     if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     else context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 }) {
-                    Text("💳 카드 문자 자동 기록 켜기", style = MaterialTheme.typography.titleSmall)
+                    Text("카드 문자 자동 기록 켜기", style = MaterialTheme.typography.titleSmall)
                     Text(
                         "알림 접근을 허용하면 카드·은행·페이 알림과 문자를 읽어 자동으로 적어요. 결제 알림이 아닌 메시지는 저장하지 않아요.",
                         style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 4.dp),
@@ -151,7 +152,7 @@ fun HomeTab(nav: Nav) {
         }
         item { SectionHeader("최근 내역", "전체 보기") { nav.tab = 1 } }
         if (recent.isEmpty()) item {
-            EmptyState("✍️", "아직 기록이 없어요", "아래 + 버튼으로 직접 적거나, 쇼핑 앱 주문내역 스크린샷을 공유해 보세요")
+            EmptyState(Icons.Rounded.EditNote, "아직 기록이 없어요", "아래 + 버튼으로 직접 적거나, 쇼핑 앱 주문내역 스크린샷을 공유해 보세요")
         }
         items(recent, key = { it.id }) { tx ->
             TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) }

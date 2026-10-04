@@ -60,9 +60,9 @@ class DomainTest {
     }
 
     @Test fun splitsAndCancelsInCategoryTotals() {
-        val food = Category(id = 1, type = TxType.EXPENSE, name = "식비", emoji = "", color = 0)
-        val lunch = Category(id = 2, type = TxType.EXPENSE, name = "점심", emoji = "", color = 0, parentId = 1)
-        val home = Category(id = 3, type = TxType.EXPENSE, name = "생활용품", emoji = "", color = 0)
+        val food = Category(id = 1, type = TxType.EXPENSE, name = "식비", icon = "", color = 0)
+        val lunch = Category(id = 2, type = TxType.EXPENSE, name = "점심", icon = "", color = 0, parentId = 1)
+        val home = Category(id = 3, type = TxType.EXPENSE, name = "생활용품", icon = "", color = 0)
         val txs = listOf(
             Tx(id = 10, amount = 8000, occurredAt = 0, categoryId = 2),
             Tx(id = 11, amount = 21400, occurredAt = 0, categoryId = 3), // order with 2 splits

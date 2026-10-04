@@ -12,15 +12,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CreditCard
+import androidx.compose.material.icons.rounded.Inventory2
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PersonOutline
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.AutoInputService
@@ -60,13 +68,16 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
         AnimatedContent(step, Modifier.weight(1f), label = "onboarding") { s ->
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
                 when (s) {
-                    0 -> Page("💳", "카드 문자가 오면\n알아서 적어요", "카드·은행·페이 알림과 문자를 읽어 바로 기록해요. 같은 결제가 두 번 와도 한 번만 적고, 취소되면 지워요.")
-                    1 -> Page("📸", "문자가 안 오는 결제는\n스크린샷 한 장으로", "쿠팡머니처럼 알림이 없는 결제는 주문내역 스크린샷을 공유하면 AI가 품목까지 나눠 적어요.")
-                    2 -> Page("🙋", "나에게 들어오고\n나가는 돈만", "내 계좌끼리 옮긴 돈, 카드값, 페이머니 충전은 수입·지출이 아니라 적지 않아요. 할부는 매달 나눠 적어요.")
+                    0 -> Page(Icons.Rounded.CreditCard, "카드 문자가 오면\n알아서 적어요", "카드·은행·페이 알림과 문자를 읽어 바로 기록해요. 같은 결제가 두 번 와도 한 번만 적고, 취소되면 지워요.")
+                    1 -> Page(Icons.Rounded.PhotoCamera, "문자가 안 오는 결제는\n스크린샷 한 장으로", "쿠팡머니처럼 알림이 없는 결제는 주문내역 스크린샷을 공유하면 AI가 품목까지 나눠 적어요.")
+                    2 -> Page(Icons.Rounded.PersonOutline, "나에게 들어오고\n나가는 돈만", "내 계좌끼리 옮긴 돈, 카드값, 페이머니 충전은 수입·지출이 아니라 적지 않아요. 할부는 매달 나눠 적어요.")
                     3 -> {
-                        Page("🔔", "카드 문자 자동 기록 켜기", "알림 접근을 허용하면 결제 알림만 골라 읽어요. 결제가 아닌 메시지는 저장하지 않아요.")
+                        Page(Icons.Rounded.NotificationsActive, "카드 문자 자동 기록 켜기", "알림 접근을 허용하면 결제 알림만 골라 읽어요. 결제가 아닌 메시지는 저장하지 않아요.")
                         Spacer(Modifier.height(24.dp))
-                        if (listenerOn) Text("✓ 켜졌어요", style = MaterialTheme.typography.titleSmall, color = pal.income)
+                        if (listenerOn) Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.CheckCircle, null, Modifier.padding(end = 6.dp).size(20.dp), tint = pal.income)
+                            Text("켜졌어요", style = MaterialTheme.typography.titleSmall, color = pal.income)
+                        }
                         else {
                             PrimaryButton("알림 접근 허용하기", {
                                 if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -79,7 +90,7 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
                         }
                     }
                     4 -> {
-                        Page("🏦", "내 이름과 한 달 시작일", "은행 알림에 내 이름이 받는 사람·보낸 사람으로 나오면 내 계좌끼리 옮긴 돈이라 적지 않아요.")
+                        Page(Icons.Rounded.AccountBalance, "내 이름과 한 달 시작일", "은행 알림에 내 이름이 받는 사람·보낸 사람으로 나오면 내 계좌끼리 옮긴 돈이라 적지 않아요.")
                         Spacer(Modifier.height(20.dp))
                         OutlinedTextField(
                             value = name, onValueChange = { name = it }, singleLine = true, label = { Text("내 이름 (통장에 찍히는 실명)") },
@@ -94,7 +105,7 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
                             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 16.dp),
                         )
                     }
-                    else -> Page("📦", "예전 가계부가 있나요?", "똑똑가계부 백업 파일(.db)이 있으면 내역·카테고리·결제수단을 그대로 옮겨요. 나중에 설정 → 백업 · 복구에서 해도 돼요.")
+                    else -> Page(Icons.Rounded.Inventory2, "예전 가계부가 있나요?", "똑똑가계부 백업 파일(.db)이 있으면 내역·카테고리·결제수단을 그대로 옮겨요. 나중에 설정 → 백업 · 복구에서 해도 돼요.")
                 }
             }
         }
@@ -113,8 +124,10 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
 }
 
 @Composable
-private fun Page(emoji: String, title: String, body: String) {
-    Text(emoji, fontSize = 48.sp)
+private fun Page(icon: ImageVector, title: String, body: String) {
+    Box(Modifier.size(64.dp).clip(RoundedCornerShape(20.dp)).background(pal.brandSoft), contentAlignment = Alignment.Center) {
+        Icon(icon, null, Modifier.size(32.dp), tint = pal.brand)
+    }
     Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 20.dp))
     Text(body, style = MaterialTheme.typography.bodyLarge, color = pal.sub, modifier = Modifier.padding(top = 12.dp))
 }

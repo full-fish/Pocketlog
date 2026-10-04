@@ -64,7 +64,7 @@ fun AssetsTab(nav: Nav) {
                 if (totalBudget != null) BudgetLine("전체", spent, totalBudget)
                 catBudgets.forEach { b ->
                     val c = cats.firstOrNull { it.id == b.categoryId } ?: return@forEach
-                    BudgetLine("${c.emoji} ${c.name}", byCat[c.id] ?: 0, b.amount)
+                    BudgetLine(c.name, byCat[c.id] ?: 0, b.amount)
                 }
             }
         }
@@ -132,7 +132,7 @@ fun BudgetEditScreen(nav: Nav) {
             }
             items(tops, key = { it.id }) { c ->
                 val b = budgets.firstOrNull { it.categoryId == c.id }
-                ListRow("${c.emoji} ${c.name}", trailing = { Text(b?.let { won(it.amount) } ?: "-", color = if (b == null) pal.faint else pal.text) }) {
+                ListRow(c.name, trailing = { Text(b?.let { won(it.amount) } ?: "-", color = if (b == null) pal.faint else pal.text) }) {
                     editing = c to b
                 }
             }

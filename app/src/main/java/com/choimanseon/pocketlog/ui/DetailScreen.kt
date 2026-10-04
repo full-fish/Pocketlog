@@ -10,6 +10,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -56,7 +59,7 @@ fun DetailScreen(id: Long, nav: Nav) {
 
     PageScaffold("내역", onBack = nav::pop) {
         if (t == null || t.deletedAt != null) {
-            EmptyState("🗑️", "삭제된 내역이에요")
+            EmptyState(Icons.Rounded.DeleteOutline, "삭제된 내역이에요")
             return@PageScaffold
         }
         val catMap = cats.associateBy { it.id }
@@ -79,7 +82,7 @@ fun DetailScreen(id: Long, nav: Nav) {
             PCard(Modifier.padding(horizontal = 16.dp)) {
                 InfoRow("날짜", t.occurredAt.fmt(DateTimeFormatter.ofPattern("yyyy년 M월 d일 (E) HH:mm", java.util.Locale.KOREAN)))
                 InfoRow("종류", when (t.type) { TxType.EXPENSE -> "지출"; TxType.INCOME -> "수입"; TxType.TRANSFER -> "이체" })
-                if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.let { c -> "${c.emoji} ${c.parentId?.let { catMap[it]?.name + " › " }.orEmpty()}${c.name}" } ?: "미분류")
+                if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.let { c -> "${c.parentId?.let { catMap[it]?.name + " › " }.orEmpty()}${c.name}" } ?: "미분류")
                 InfoRow(if (t.type == TxType.TRANSFER) "보낸 곳" else "결제수단", t.paymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.type == TxType.TRANSFER) InfoRow("받은 곳", t.toPaymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월" + if (plan.size > 1) " · 전체 ${num(plan.sumOf { it.amount })}원" else "")
@@ -92,7 +95,7 @@ fun DetailScreen(id: Long, nav: Nav) {
                 PCard(Modifier.padding(horizontal = 16.dp)) {
                     splits.forEach { s ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(s.categoryId?.let { catMap[it]?.emoji } ?: "🧾")
+                            CategoryIcon(s.categoryId?.let { catMap[it] }, 28.dp)
                             Text(s.name + if (s.quantity > 1) " ×${s.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(start = 10.dp))
                             Text(num(s.amount), style = MaterialTheme.typography.bodyMedium)
                         }
@@ -177,7 +180,7 @@ fun ReviewScreen(nav: Nav) {
     val payMap = pays.associateBy { it.id }
 
     PageScaffold("확인 필요", onBack = nav::pop) {
-        if (pending.isEmpty() && failed.isEmpty()) EmptyState("✅", "확인할 내역이 없어요")
+        if (pending.isEmpty() && failed.isEmpty()) EmptyState(Icons.Rounded.TaskAlt, "확인할 내역이 없어요")
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
             if (pending.isNotEmpty()) item { SectionHeader("확인이 필요한 기록") }
             items(pending, key = { it.id }) { tx ->

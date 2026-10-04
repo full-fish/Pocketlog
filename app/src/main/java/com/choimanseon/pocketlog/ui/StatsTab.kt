@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -82,11 +84,11 @@ fun StatsTab(nav: Nav) {
         item {
             PCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 Text("카테고리별", style = MaterialTheme.typography.titleSmall)
-                if (sums.isEmpty()) EmptyState("📊", "이 기간에는 내역이 없어요")
+                if (sums.isEmpty()) EmptyState(Icons.Rounded.BarChart, "이 기간에는 내역이 없어요")
                 else {
                     // colors follow rank, not the category: 20 categories can't all have distinguishable colors
                     val positive = sums.filter { it.total > 0 }
-                    val rows = positive.take(7).mapIndexed { i, s -> Slice("${s.category?.emoji ?: "🧾"} ${s.category?.name ?: "미분류"}", chartColors[i], s.total) } +
+                    val rows = positive.take(7).mapIndexed { i, s -> Slice(s.category?.name ?: "미분류", chartColors[i], s.total) } +
                         positive.drop(7).takeIf { it.isNotEmpty() }?.let { rest -> listOf(Slice("그 외 ${rest.size}개", pal.faint, rest.sumOf { it.total })) }.orEmpty()
                     val all = rows.sumOf { it.total }.coerceAtLeast(1)
                     Donut(

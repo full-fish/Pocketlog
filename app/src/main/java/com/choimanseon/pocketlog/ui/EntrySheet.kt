@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -164,7 +166,7 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
             PillTabs(listOf("지출", "수입", "이체"), types.indexOf(type), Modifier.weight(1f)) {
                 if (type != types[it]) { type = types[it]; if (!pickedCategory) categoryId = null }
             }
-            if (original == null) TextButton(onClick = onScan) { Text("📷 스샷") }
+            if (original == null) TextButton(onClick = onScan) { Icon(Icons.Rounded.PhotoCamera, null, Modifier.padding(end = 4.dp).size(18.dp)); Text("스샷") }
         }
 
         // amount
@@ -196,7 +198,7 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
                 Chip("받는 곳: ${toPayId?.let { payMap[it]?.name } ?: "선택"}", toPayId != null) { picker = "to" }
             } else {
                 val parent = cat?.parentId?.let { catMap[it] }
-                Chip(cat?.let { "${it.emoji} ${parent?.let { p -> "${p.name} › " } ?: ""}${it.name}" } ?: "카테고리", cat != null) { picker = "cat" }
+                Chip(cat?.let { "${parent?.let { p -> "${p.name} › " } ?: ""}${it.name}" } ?: "카테고리", cat != null) { picker = "cat" }
                 Chip(payId?.let { payMap[it]?.name } ?: "결제수단", payId != null) { picker = "pay" }
                 if (type == TxType.EXPENSE && payId?.let { payMap[it]?.kind } == PayKind.CREDIT) {
                     Chip(if (installment == 0) "일시불" else "${installment}개월", installment > 0) { picker = "installment" }

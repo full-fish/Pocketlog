@@ -13,6 +13,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,7 +48,7 @@ fun ScanScreen(jobId: Long, nav: Nav, pickScreenshots: () -> Unit) {
         when (j?.status) {
             null, ScanStatus.RUNNING -> Analyzing(j)
             ScanStatus.FAILED -> Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("😥", style = MaterialTheme.typography.displaySmall)
+                Icon(Icons.Rounded.ErrorOutline, null, Modifier.size(48.dp), tint = pal.faint)
                 Text(j.error ?: "분석에 실패했어요", style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.padding(vertical = 12.dp))
                 PrimaryButton("다시 시도", { app.scope.launch { Scan.run(jobId) } })
                 TextButton(onClick = { nav.pop(); nav.entry = Entry() }) { Text("직접 입력하기") }
@@ -53,7 +56,7 @@ fun ScanScreen(jobId: Long, nav: Nav, pickScreenshots: () -> Unit) {
             ScanStatus.DONE, ScanStatus.SAVED -> {
                 val result = remember(j.resultJson) { runCatching { Scan.parse(j.resultJson.orEmpty()) }.getOrNull() }
                 if (result == null || result.orders.isEmpty()) {
-                    EmptyState("🧐", "결제 내역을 찾지 못했어요", "주문 목록이나 결제 내역이 보이는 화면을 캡처해 주세요")
+                    EmptyState(Icons.Rounded.SearchOff, "결제 내역을 찾지 못했어요", "주문 목록이나 결제 내역이 보이는 화면을 캡처해 주세요")
                     PrimaryButton("다른 스크린샷 고르기", { nav.pop(); pickScreenshots() }, Modifier.padding(16.dp))
                 } else ReviewOrders(j, result, nav)
             }
@@ -223,7 +226,7 @@ private fun OrderCard(
         o.items.forEachIndexed { k, item ->
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(item.name + if (item.quantity > 1) " ×${item.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 2)
-                Chip(itemCats.getOrNull(k)?.let { "${it.emoji} ${it.name}" } ?: "카테고리", itemCats.getOrNull(k) != null) { onItemCategory(k) }
+                Chip(itemCats.getOrNull(k)?.name ?: "카테고리", itemCats.getOrNull(k) != null) { onItemCategory(k) }
                 Text(num(item.amount), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp).widthIn(min = 64.dp), textAlign = TextAlign.End)
             }
         }
@@ -231,8 +234,8 @@ private fun OrderCard(
             listOfNotNull(if (o.shippingFee > 0) "배송비 ${num(o.shippingFee)}" else null, if (o.discount > 0) "할인 -${num(o.discount)}" else null).joinToString(" · "),
             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(start = 12.dp, top = 8.dp),
         )
-        if (o.mismatch) Text("⚠ 품목 합계가 결제 금액과 달라요. 금액을 눌러 고칠 수 있어요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 8.dp))
-        if (o.confidence < 0.7) Text("⚠ 잘 안 보이는 부분이 있어요. 한 번 확인해 주세요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
+        if (o.mismatch) Text("품목 합계가 결제 금액과 달라요. 금액을 눌러 고칠 수 있어요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 8.dp))
+        if (o.confidence < 0.7) Text("잘 안 보이는 부분이 있어요. 한 번 확인해 주세요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
         if (dup != null && include) {
             Column(Modifier.padding(start = 12.dp, top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(pal.warn.copy(alpha = 0.1f)).padding(12.dp)) {
                 Text(

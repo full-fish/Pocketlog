@@ -114,7 +114,7 @@ fun AutoInputSettingsScreen(nav: Nav) {
         LazyColumn {
             item {
                 PCard(Modifier.padding(16.dp)) {
-                    Text(if (granted) "✅ 알림 접근이 허용되어 있어요" else "알림 접근을 허용해 주세요", style = MaterialTheme.typography.titleSmall)
+                    Text(if (granted) "알림 접근이 허용되어 있어요" else "알림 접근을 허용해 주세요", style = MaterialTheme.typography.titleSmall)
                     Text(
                         "카드·은행·페이 앱 알림과 문자 알림에서 결제 내용만 골라 기록해요. 결제 알림이 아닌 메시지는 저장하지 않아요." +
                             if (!granted) "\n\n직접 설치한 앱은 '앱 정보 > ⋮ > 제한된 설정 허용'을 먼저 해야 할 수 있어요." else "",
@@ -212,7 +212,7 @@ fun CategoriesScreen(nav: Nav) {
     val tops = cats.filter { it.type == type && it.parentId == null }
 
     PageScaffold("카테고리 편집", onBack = nav::pop, actions = {
-        IconButton(onClick = { editing = Category(type = type, name = "", emoji = "📦", color = CategoryColors[tops.size % CategoryColors.size], sort = tops.size) }) {
+        IconButton(onClick = { editing = Category(type = type, name = "", icon = "box", color = CategoryColors[tops.size % CategoryColors.size], sort = tops.size) }) {
             Icon(Icons.Rounded.Add, "추가")
         }
     }) {
@@ -225,7 +225,7 @@ fun CategoriesScreen(nav: Nav) {
         }
     }
     editing?.let { c -> CategoryEditDialog(c, cats, onDismiss = { editing = null }, onAddChild = {
-        editing = Category(type = c.type, name = "", emoji = c.emoji, color = c.color, parentId = c.id, sort = cats.count { it.parentId == c.id })
+        editing = Category(type = c.type, name = "", icon = c.icon, color = c.color, parentId = c.id, sort = cats.count { it.parentId == c.id })
     }) }
 }
 
@@ -245,7 +245,7 @@ private fun CategoryRow(c: Category, indent: Boolean, onClick: () -> Unit) {
 private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -> Unit, onAddChild: () -> Unit) {
     val dao = app.dao
     var name by remember(c) { mutableStateOf(c.name) }
-    var emoji by remember(c) { mutableStateOf(c.emoji) }
+    var icon by remember(c) { mutableStateOf(c.icon) }
     var color by remember(c) { mutableLongStateOf(c.color) }
     var hidden by remember(c) { mutableStateOf(c.hidden) }
     var merging by remember { mutableStateOf(false) }
@@ -255,8 +255,8 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
         title = { Text(if (isNew) (if (c.parentId != null) "하위 카테고리 추가" else "카테고리 추가") else "카테고리 편집") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(emoji, { emoji = it.take(4) }, singleLine = true, label = { Text("이모지") }, modifier = Modifier.width(84.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CategoryIcon(c.copy(icon = icon, color = color), 48.dp)
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("이름") })
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -265,6 +265,15 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
                             Modifier.size(22.dp).clip(CircleShape).background(Color(col))
                                 .clickable { color = col }.then(if (col == color) Modifier.background(Color.White.copy(alpha = 0.4f)) else Modifier),
                         )
+                    }
+                }
+                // a lazy grid here never settles inside AlertDialog's layout
+                FlowRow(Modifier.height(160.dp).verticalScroll(rememberScrollState())) {
+                    CategoryIcons.keys.forEach { k ->
+                        Box(
+                            Modifier.size(40.dp).clip(CircleShape).background(if (k == icon) Color(color).copy(alpha = 0.16f) else Color.Transparent).clickable { icon = k },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(CategoryIcons.getValue(k), k, tint = if (k == icon) Color(color) else pal.sub) }
                     }
                 }
                 if (!isNew) {
@@ -283,7 +292,7 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
         },
         confirmButton = {
             TextButton(onClick = {
-                if (name.isNotBlank()) app.scope.launch { dao.upsert(c.copy(name = name.trim(), emoji = emoji.ifBlank { "📦" }, color = color, hidden = hidden)) }
+                if (name.isNotBlank()) app.scope.launch { dao.upsert(c.copy(name = name.trim(), icon = icon, color = color, hidden = hidden)) }
                 onDismiss()
             }) { Text("저장") }
         },
@@ -291,7 +300,7 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
     )
     if (merging) {
         val targets = all.filter { it.type == c.type && it.id != c.id && it.parentId != c.id }
-        ChoiceDialog("'${c.name}'을(를) 어디로 합칠까요?", targets.map { t -> "${t.emoji} " + (t.parentId?.let { p -> all.firstOrNull { it.id == p }?.name + " › " } ?: "") + t.name }, -1, { merging = false }) { i ->
+        ChoiceDialog("'${c.name}'을(를) 어디로 합칠까요?", targets.map { t -> (t.parentId?.let { p -> all.firstOrNull { it.id == p }?.name + " › " } ?: "") + t.name }, -1, { merging = false }) { i ->
             app.scope.launch { dao.mergeCategory(c.id, targets[i].id) }
             merging = false
             onDismiss()

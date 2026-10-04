@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -74,7 +76,7 @@ fun PinPad(title: String, error: String? = null, onBiometric: (() -> Unit)? = nu
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.weight(1f))
-        Text("🔒", fontSize = 36.sp)
+        Icon(Icons.Rounded.Lock, null, Modifier.size(36.dp), tint = pal.sub)
         Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
         Text(error.orEmpty(), style = MaterialTheme.typography.bodySmall, color = pal.danger, modifier = Modifier.padding(top = 8.dp).height(20.dp))
         Row(Modifier.padding(vertical = 24.dp).offset { IntOffset(shake.value.dp.roundToPx(), 0) }, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
