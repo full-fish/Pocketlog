@@ -62,9 +62,7 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().background(pal.bg).statusBarsPadding().navigationBarsPadding().imePadding().padding(24.dp)) {
-        Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.CenterEnd) {
-            if (step < 3) TextButton(onClick = { step = 3 }) { Text("건너뛰기", color = pal.sub) }
-        }
+        Spacer(Modifier.height(48.dp)) // no 건너뛰기: the name and notification steps come right after the intro (TODO #14)
         AnimatedContent(step, Modifier.weight(1f), label = "onboarding") { s ->
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
                 when (s) {

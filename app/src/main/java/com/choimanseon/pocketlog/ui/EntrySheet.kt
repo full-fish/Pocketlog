@@ -44,7 +44,8 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import kotlin.math.abs
 
-private val types = listOf(TxType.EXPENSE, TxType.INCOME, TxType.TRANSFER)
+// 이체 only appears when editing an old transfer: moving my own money isn't recorded (TODO #7)
+private val allTypes = listOf(TxType.EXPENSE, TxType.INCOME, TxType.TRANSFER)
 
 /** "12000+3000" → "12,000 + 3,000" */
 private fun prettyExpr(expr: String) = Regex("""\d+|[+−×÷]""").findAll(expr).joinToString(" ") { m ->
@@ -163,7 +164,8 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
 
     Column(Modifier.fillMaxWidth().imePadding().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            PillTabs(listOf("지출", "수입", "이체"), types.indexOf(type), Modifier.weight(1f)) {
+            val types = if (type == TxType.TRANSFER) allTypes else allTypes.dropLast(1)
+            PillTabs(listOf("지출", "수입", "이체").take(types.size), types.indexOf(type), Modifier.weight(1f)) {
                 if (type != types[it]) { type = types[it]; if (!pickedCategory) categoryId = null }
             }
             if (original == null) TextButton(onClick = onScan) { Icon(Icons.Rounded.PhotoCamera, null, Modifier.padding(end = 4.dp).size(18.dp)); Text("스샷") }
@@ -228,7 +230,9 @@ fun EntryForm(entry: Entry, nav: Nav, onScan: () -> Unit, onDismiss: () -> Unit)
     }
 
     when (picker) {
-        "cat" -> CategoryPickerSheet(type, cats, categoryId, onDismiss = { picker = null }) { categoryId = it; pickedCategory = true; picker = null }
+        "cat" -> CategoryPickerSheet(type, cats, categoryId, onDismiss = { picker = null }, onManage = { picker = null; onDismiss(); nav.push(Screen.Categories) }) {
+            categoryId = it; pickedCategory = true; picker = null
+        }
         "pay" -> PayPickerSheet(pays, payId, if (type == TxType.TRANSFER) "보내는 곳" else "결제수단", onDismiss = { picker = null },
             onManage = { picker = null; onDismiss(); nav.push(Screen.PayMethods) }) { payId = it; picker = null }
         "to" -> PayPickerSheet(pays, toPayId, "받는 곳", onDismiss = { picker = null }) { toPayId = it; picker = null }

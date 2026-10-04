@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.AutoInputService
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.TxFilter
 import com.choimanseon.pocketlog.domain.byTopCategory
 import com.choimanseon.pocketlog.domain.josa
 import com.choimanseon.pocketlog.domain.monthPeriod
@@ -139,7 +140,10 @@ fun HomeTab(nav: Nav) {
                     Text("확인이 필요한 내역 ${reviewCount}건", style = MaterialTheme.typography.titleSmall, color = pal.warn)
                     Text("자동 기록 중 확실하지 않은 건이에요. 눌러서 확인해 주세요.", style = MaterialTheme.typography.bodySmall, color = pal.sub)
                 }
-                if (top != null && spent > 0) PCard {
+                if (top != null && spent > 0) PCard(onClick = {
+                    val f = TxFilter(period.startMillis, period.endMillis, TxType.EXPENSE)
+                    nav.push(Screen.TxList("이번 달 · ${top.category?.name ?: "미분류"}", top.category?.let { f.copy(category = it.id) } ?: f.copy(uncategorized = true)))
+                }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CategoryIcon(top.category, 36.dp)
                         Text(

@@ -28,6 +28,9 @@ interface PocketDao {
     @Query("SELECT * FROM TxSplit WHERE txId IN (SELECT id FROM Tx WHERE deletedAt IS NULL AND occurredAt >= :start AND occurredAt < :end)")
     suspend fun splitsBetweenOnce(start: Long, end: Long): List<TxSplit>
 
+    @Query("SELECT MIN(occurredAt) FROM Tx WHERE deletedAt IS NULL")
+    fun firstTxAt(): Flow<Long?>
+
     @Query("SELECT * FROM Tx WHERE id = :id")
     fun tx(id: Long): Flow<Tx?>
 
@@ -47,13 +50,14 @@ interface PocketDao {
         """SELECT * FROM Tx WHERE deletedAt IS NULL
         AND (:q = '' OR merchant LIKE '%' || :q || '%' OR memo LIKE '%' || :q || '%')
         AND (:min IS NULL OR ABS(amount) >= :min) AND (:max IS NULL OR ABS(amount) <= :max)
+        AND (:pay IS NULL OR paymentMethodId = :pay)
         AND (:cat IS NULL OR categoryId = :cat
              OR categoryId IN (SELECT id FROM Category WHERE parentId = :cat)
              OR id IN (SELECT txId FROM TxSplit WHERE categoryId = :cat
                        OR categoryId IN (SELECT id FROM Category WHERE parentId = :cat)))
         ORDER BY occurredAt DESC LIMIT 300"""
     )
-    fun search(q: String, cat: Long?, min: Long?, max: Long?): Flow<List<Tx>>
+    fun search(q: String, cat: Long?, pay: Long?, min: Long?, max: Long?): Flow<List<Tx>>
 
     @Query("SELECT merchant FROM Tx WHERE deletedAt IS NULL AND merchant != '' AND merchant LIKE :prefix || '%' GROUP BY merchant ORDER BY MAX(occurredAt) DESC LIMIT 5")
     suspend fun merchantsLike(prefix: String): List<String>
@@ -208,6 +212,13 @@ interface PocketDao {
 
     @Query("SELECT COUNT(*) FROM RawMessage WHERE body = :body AND receivedAt > :since")
     suspend fun countSameBody(body: String, since: Long): Int
+
+    // ---- test data (설정 → 더미 데이터)
+    @Query("SELECT COUNT(*) FROM Tx WHERE source = 'DUMMY'")
+    fun dummyCount(): Flow<Int>
+
+    @Query("DELETE FROM Tx WHERE source = 'DUMMY'")
+    suspend fun deleteDummy()
 
     // ---- import (똑똑가계부): everything is replaced in one transaction
     @Query("DELETE FROM TxSplit") suspend fun deleteAllSplits()

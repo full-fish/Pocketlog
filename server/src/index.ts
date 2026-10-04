@@ -7,7 +7,9 @@ interface Env {
   APP_TOKEN: string;
 }
 
-const MODEL = "gpt-5.5";
+// the app picks one in 설정 → AI; anything else falls back to the default
+const MODELS = ["gpt-6-astra", "gpt-6.1-sol", "gpt-5.5", "gpt-6-luna"];
+const DEFAULT_MODEL = "gpt-5.5";
 
 class BadInput extends Error {}
 class Refused extends Error {}
@@ -142,12 +144,13 @@ function categoriesText(body: Body): string {
   return cats.map((c: any) => `${String(c.id)}: ${String(c.name)}`).join("\n");
 }
 
-async function ask(env: Env, path: string, system: string, content: Content, schema: object) {
+async function ask(env: Env, body: Body, path: string, system: string, content: Content, schema: object) {
+  const model = MODELS.includes(body.model as string) ? (body.model as string) : DEFAULT_MODEL;
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       reasoning_effort: "low",
       max_completion_tokens: 16000,
       response_format: { type: "json_schema", json_schema: { name: "result", strict: true, schema } },
@@ -163,7 +166,7 @@ async function ask(env: Env, path: string, system: string, content: Content, sch
   }
   const data: any = await res.json();
   const choice = data.choices?.[0];
-  console.log(JSON.stringify({ path, finish: choice?.finish_reason, usage: data.usage }));
+  console.log(JSON.stringify({ path, model, finish: choice?.finish_reason, usage: data.usage }));
   if (choice?.message?.refusal) throw new Refused();
   if (choice?.finish_reason !== "stop" || typeof choice.message?.content !== "string") throw new Error(`no answer: ${choice?.finish_reason}`);
   return JSON.parse(choice.message.content);
@@ -182,20 +185,20 @@ async function scan(env: Env, body: Body) {
     text: `today: ${String(body.today ?? new Date().toISOString().slice(0, 10))}\n\ncategories (id: name):\n${categoriesText(body)}` +
       (hints.length ? `\n\nuser hints (keyword → category):\n${hints.join("\n")}` : ""),
   });
-  return { result: await ask(env, "/scan", SCAN_SYSTEM, content, SCAN_SCHEMA) };
+  return { result: await ask(env, body, "/scan", SCAN_SYSTEM, content, SCAN_SCHEMA) };
 }
 
 async function parse(env: Env, body: Body) {
   const text = body.text;
   if (typeof text !== "string" || text.length === 0 || text.length > 2000) throw new BadInput("text");
-  return ask(env, "/parse", PARSE_SYSTEM, [{ type: "text", text }], PARSE_SCHEMA);
+  return ask(env, body, "/parse", PARSE_SYSTEM, [{ type: "text", text }], PARSE_SCHEMA);
 }
 
 async function categorize(env: Env, body: Body) {
   const merchants = body.merchants;
   if (!Array.isArray(merchants) || merchants.length === 0 || merchants.length > 50) throw new BadInput("merchants");
   const text = `categories (id: name):\n${categoriesText(body)}\n\nmerchants:\n${merchants.map(String).join("\n")}`;
-  return ask(env, "/categorize", CATEGORIZE_SYSTEM, [{ type: "text", text }], CATEGORIZE_SCHEMA);
+  return ask(env, body, "/categorize", CATEGORIZE_SYSTEM, [{ type: "text", text }], CATEGORIZE_SCHEMA);
 }
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });

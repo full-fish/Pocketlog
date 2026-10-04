@@ -42,7 +42,7 @@ ai.appToken=<APP_TOKEN과 같은 값>
 
 ## 비용·로그
 
-- 모델: `gpt-5.5`, `reasoning_effort: low`, 구조화 출력(JSON 스키마, strict). 스샷 1장 약 45~60원 (기획서 §9).
+- 모델: 앱 설정에서 고른 것 (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-5.5`, `gpt-6-luna` 중 하나, 그 밖은 기본값 `gpt-5.5`), `reasoning_effort: low`, 구조화 출력(JSON 스키마, strict). 스샷 1장 약 1~60원 (측정: TODO.md #3).
 - 요청마다 토큰 사용량을 `console.log`로 남깁니다. `npx wrangler tail`로 확인하세요.
 - Workers 무료 플랜은 요청당 CPU 10ms 제한이 있어 큰 스크린샷 여러 장을 보내면 실패할 수 있습니다. 그러면 유료 플랜($5/월)을 쓰세요.
 - 사용자별 사용량 제한은 아직 없습니다 (스토어 출시 전 P1에서 KV/D1로 추가).

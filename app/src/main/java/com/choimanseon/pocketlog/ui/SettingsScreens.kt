@@ -8,12 +8,29 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import com.choimanseon.pocketlog.domain.moveCategory
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -38,6 +55,7 @@ import com.choimanseon.pocketlog.auto.AutoInputService
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.CategoryColors
 import com.choimanseon.pocketlog.data.ClevImport
+import com.choimanseon.pocketlog.data.Dummy
 import com.choimanseon.pocketlog.data.PayKind
 import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Rule
@@ -57,6 +75,7 @@ fun SettingsScreen(nav: Nav) {
     val v by app.prefs.version.collectAsState()
     val p = app.prefs
     var dialog by remember { mutableStateOf<String?>(null) }
+    val dummies by rememberFlow(0) { app.dao.dummyCount() }
     PageScaffold("설정", onBack = nav::pop) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             GroupLabel("기본")
@@ -75,10 +94,17 @@ fun SettingsScreen(nav: Nav) {
             SwitchRow(
                 "AI 사용 동의", "스크린샷과 읽지 못한 알림 문구를 AI 서버로 보내 분석해요. 서버에는 저장하지 않아요.", p.aiConsent,
             ) { p.aiConsent = it }
+            ListRow("AI 모델", Ai.models.firstOrNull { it.first == p.aiModel }?.second?.replace("\n", " · ") ?: p.aiModel) { dialog = "model" }
 
             GroupLabel("보안 · 데이터")
             ListRow("앱 잠금", if (Pin.isSet) "켜짐" else "꺼짐") { nav.push(Screen.Security) }
             ListRow("백업 · 복구 · 초기화") { nav.push(Screen.Data) }
+
+            if (BuildConfig.DEBUG) {
+                GroupLabel("테스트 (개발용 빌드에만 보여요)")
+                ListRow("더미 데이터 넣기", "5년치 가짜 내역을 만들어요. 내역에 '더미' 표시가 붙어요") { dialog = "dummy" }
+                if (dummies > 0) ListRow("더미 데이터 지우기", "더미 ${num(dummies.toLong())}건만 지워요. 진짜 내역은 그대로예요") { dialog = "undummy" }
+            }
 
             GroupLabel("정보")
             ListRow("버전", BuildConfig.VERSION_NAME)
@@ -88,6 +114,18 @@ fun SettingsScreen(nav: Nav) {
     when (dialog) {
         "month" -> ChoiceDialog("한 달 시작일", (1..28).map { "매월 ${it}일" }, p.monthStartDay - 1, { dialog = null }) { p.monthStartDay = it + 1; dialog = null }
         "week" -> ChoiceDialog("한 주 시작 요일", DayOfWeek.entries.map { it.getDisplayName(TextStyle.FULL, Locale.KOREAN) }, p.weekStart - 1, { dialog = null }) { p.weekStart = it + 1; dialog = null }
+        "model" -> ChoiceDialog("AI 모델", Ai.models.map { it.second }, Ai.models.indexOfFirst { it.first == p.aiModel }, { dialog = null }) {
+            p.aiModel = Ai.models[it].first; dialog = null
+        }
+        "dummy" -> ConfirmDialog("더미 데이터를 넣을까요?", "지금 있는 카테고리와 결제수단으로 5년치 내역을 만들어요. 진짜 내역은 그대로 두고, 나중에 더미만 지울 수 있어요.", "넣기", onDismiss = { dialog = null }) {
+            dialog = null
+            app.scope.launch { val n = Dummy.insert(); nav.toast("더미 내역 ${num(n.toLong())}건을 넣었어요") }
+        }
+        "undummy" -> ConfirmDialog("더미 데이터를 지울까요?", "'더미' 표시가 붙은 내역만 지워요.", "지우기", danger = true, onDismiss = { dialog = null }) {
+            dialog = null
+            app.scope.launch { app.dao.deleteDummy() }
+            nav.toast("더미 데이터를 지웠어요")
+        }
         "theme" -> {
             val keys = listOf("system", "light", "dark")
             ChoiceDialog("화면 테마", listOf("시스템 설정 따르기", "라이트", "다크"), keys.indexOf(p.theme), { dialog = null }) { p.theme = keys[it]; dialog = null }
@@ -131,8 +169,11 @@ fun AutoInputSettingsScreen(nav: Nav) {
                 }
                 SwitchRow("카테고리 자동 분류", "가맹점 이름으로 카테고리를 골라요. 바꾼 카테고리는 기억해요", p.autoCategory) { p.autoCategory = it }
                 ListRow(
-                    "내 이름",
-                    (if (p.myName.isBlank()) "설정 안 함" else p.myName) + " · 이 이름으로 오가는 돈은 내 계좌끼리 옮긴 거라 기록하지 않아요",
+                    "내 이름", "이 이름으로 오가는 돈은 내 계좌끼리 옮긴 거라 기록하지 않아요",
+                    trailing = {
+                        Text(p.myName.ifBlank { "설정 안 함" }, style = MaterialTheme.typography.bodyMedium, color = if (p.myName.isBlank()) pal.faint else pal.text)
+                        TextButton(onClick = { editName = true }) { Text("변경") }
+                    },
                 ) { editName = true }
                 Text(
                     "내 계좌 간 이체, 카드값 출금, 페이머니 충전, 카드 선승인은 수입·지출이 아니라서 기록하지 않아요.",
@@ -202,6 +243,7 @@ private fun RuleRow(text: String, onDelete: () -> Unit) =
 
 // ---------------------------------------------------------------- categories
 
+/** Long-press a row and drag it (TODO #8): up and down to reorder, right to become a subcategory, left to come back to the top level. */
 @Composable
 fun CategoriesScreen(nav: Nav) {
     val dao = app.dao
@@ -210,6 +252,43 @@ fun CategoriesScreen(nav: Nav) {
     val type = if (typeIndex == 0) TxType.EXPENSE else TxType.INCOME
     var editing by remember { mutableStateOf<Category?>(null) }
     val tops = cats.filter { it.type == type && it.parentId == null }
+    val rows = remember(cats, type) { tops.flatMap { t -> listOf(t) + cats.filter { it.parentId == t.id } } }
+
+    val scroll = rememberScrollState()
+    val density = LocalDensity.current
+    val haptics = LocalHapticFeedback.current
+    val bounds = remember { mutableStateMapOf<Long, Pair<Float, Float>>() } // top, height inside the list
+    var viewport by remember { mutableFloatStateOf(0f) }
+    var drag by remember { mutableStateOf<CategoryDrag?>(null) }
+
+    // where the dragged row would land: before rows[gap], under parent
+    fun target(d: CategoryDrag): Pair<Int, Long?> {
+        val group = setOf(d.id) + rows.filter { it.parentId == d.id }.map { it.id }
+        val hasChildren = group.size > 1
+        val center = d.top + d.height / 2 + d.dy + (scroll.value - d.scrollAtStart)
+        var gap = rows.indexOfFirst { it.id !in group && bounds[it.id]?.let { (t, h) -> t + h / 2 > center } == true }.let { if (it < 0) rows.size else it }
+        if (hasChildren) while (gap < rows.size && (rows[gap].parentId != null || rows[gap].id in group)) gap++ // a category with subcategories stays on top
+        val next = rows.getOrNull(gap)
+        val prev = rows.take(gap).lastOrNull { it.id !in group }
+        val parent = when {
+            hasChildren || prev == null -> null
+            next?.parentId != null -> next.parentId
+            d.dx > with(density) { 40.dp.toPx() } -> prev.parentId ?: prev.id
+            else -> null
+        }
+        return gap to parent
+    }
+
+    LaunchedEffect(drag != null) {
+        val edge = with(density) { 72.dp.toPx() }
+        while (drag != null) {
+            val d = drag!!
+            val y = d.top + d.height / 2 + d.dy - d.scrollAtStart
+            val step = when { y < edge -> -14f; y > viewport - edge -> 14f; else -> 0f }
+            if (step != 0f) scroll.scrollBy(step)
+            withFrameNanos { }
+        }
+    }
 
     PageScaffold("카테고리 편집", onBack = nav::pop, actions = {
         IconButton(onClick = { editing = Category(type = type, name = "", icon = "box", color = CategoryColors[tops.size % CategoryColors.size], sort = tops.size) }) {
@@ -217,10 +296,54 @@ fun CategoriesScreen(nav: Nav) {
         }
     }) {
         PillTabs(listOf("지출", "수입"), typeIndex, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { typeIndex = it }
-        LazyColumn(Modifier.weight(1f)) {
-            tops.forEach { c ->
-                item(key = c.id) { CategoryRow(c, indent = false) { editing = c } }
-                items(cats.filter { it.parentId == c.id }, key = { it.id }) { s -> CategoryRow(s, indent = true) { editing = s } }
+        Text(
+            "길게 눌러 끌면 순서를 바꿔요. 오른쪽으로 끌면 위 카테고리의 하위로, 왼쪽으로 끌면 상위로 옮겨요.",
+            style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+        )
+        Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { viewport = it.height.toFloat() }.verticalScroll(scroll)) {
+            Column {
+                rows.forEach { c ->
+                    key(c.id) {
+                        val d = drag
+                        val dragging = d?.id == c.id
+                        CategoryRow(
+                            c, indent = c.parentId != null,
+                            Modifier.onGloballyPositioned { bounds[c.id] = it.positionInParent().y to it.size.height.toFloat() }
+                                .zIndex(if (dragging) 1f else 0f)
+                                .graphicsLayer {
+                                    if (dragging) { translationY = d!!.dy + (scroll.value - d.scrollAtStart); translationX = d.dx.coerceIn(-40f, 120f); shadowElevation = 12f }
+                                    alpha = if (d != null && c.parentId == d.id) 0.4f else 1f
+                                }
+                                .pointerInput(c.id, rows) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            val (t, h) = bounds[c.id] ?: (0f to 0f)
+                                            drag = CategoryDrag(c.id, t, h, scroll.value)
+                                        },
+                                        onDrag = { change, amount -> change.consume(); drag?.let { it.dy += amount.y; it.dx += amount.x } },
+                                        onDragEnd = {
+                                            drag?.let { dd ->
+                                                val (gap, parent) = target(dd)
+                                                val changes = moveCategory(rows, dd.id, gap, parent)
+                                                if (changes.isNotEmpty()) app.scope.launch { changes.forEach { dao.upsert(it) } }
+                                            }
+                                            drag = null
+                                        },
+                                        onDragCancel = { drag = null },
+                                    )
+                                },
+                        ) { editing = c }
+                    }
+                }
+            }
+            drag?.let { d ->
+                val (gap, parent) = target(d)
+                val y = rows.getOrNull(gap)?.let { bounds[it.id]?.first } ?: rows.lastOrNull()?.let { bounds[it.id]?.let { (t, h) -> t + h } } ?: 0f
+                Box(
+                    Modifier.offset { IntOffset(0, y.toInt()) }.padding(start = if (parent == null) 20.dp else 56.dp, end = 20.dp)
+                        .fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(pal.brand),
+                )
             }
         }
     }
@@ -229,15 +352,21 @@ fun CategoriesScreen(nav: Nav) {
     }) }
 }
 
+private class CategoryDrag(val id: Long, val top: Float, val height: Float, val scrollAtStart: Int) {
+    var dy by mutableFloatStateOf(0f)
+    var dx by mutableFloatStateOf(0f)
+}
+
 @Composable
-private fun CategoryRow(c: Category, indent: Boolean, onClick: () -> Unit) {
+private fun CategoryRow(c: Category, indent: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = if (indent) 56.dp else 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
+        modifier.fillMaxWidth().background(pal.bg).clickable(onClick = onClick).padding(start = if (indent) 56.dp else 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CategoryIcon(c, if (indent) 32.dp else 40.dp)
         Text(c.name, style = MaterialTheme.typography.bodyLarge, color = if (c.hidden) pal.faint else pal.text, modifier = Modifier.weight(1f).padding(start = 12.dp))
         if (c.hidden) Tag("숨김")
+        Icon(Icons.Rounded.DragHandle, null, tint = pal.faint, modifier = Modifier.padding(start = 8.dp).size(20.dp))
     }
 }
 
@@ -249,31 +378,34 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
     var color by remember(c) { mutableLongStateOf(c.color) }
     var hidden by remember(c) { mutableStateOf(c.hidden) }
     var merging by remember { mutableStateOf(false) }
+    var customColor by remember { mutableStateOf(false) }
     val isNew = c.id == 0L
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (isNew) (if (c.parentId != null) "하위 카테고리 추가" else "카테고리 추가") else "카테고리 편집") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     CategoryIcon(c.copy(icon = icon, color = color), 48.dp)
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("이름") })
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // preset colors, then the rainbow for any color (TODO #9)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     CategoryColors.forEach { col ->
                         Box(
-                            Modifier.size(22.dp).clip(CircleShape).background(Color(col))
-                                .clickable { color = col }.then(if (col == color) Modifier.background(Color.White.copy(alpha = 0.4f)) else Modifier),
+                            Modifier.size(22.dp).clip(CircleShape).background(Color(col)).clickable { color = col }
+                                .then(if (col == color) Modifier.border(2.dp, pal.text, CircleShape) else Modifier),
                         )
                     }
+                    RainbowSwatch(Color(color).takeIf { color !in CategoryColors }, 22.dp) { customColor = true }
                 }
-                // a lazy grid here never settles inside AlertDialog's layout
-                FlowRow(Modifier.height(160.dp).verticalScroll(rememberScrollState())) {
-                    CategoryIcons.keys.forEach { k ->
+                // equal side margins at any width (TODO #10); a lazy grid here never settles inside AlertDialog's layout
+                EvenGrid(36.dp, Modifier.height(168.dp).verticalScroll(rememberScrollState())) {
+                    CategoryIcons.forEach { (k, vector) ->
                         Box(
-                            Modifier.size(40.dp).clip(CircleShape).background(if (k == icon) Color(color).copy(alpha = 0.16f) else Color.Transparent).clickable { icon = k },
+                            Modifier.size(36.dp).clip(CircleShape).background(if (k == icon) Color(color).copy(alpha = 0.16f) else Color.Transparent).clickable { icon = k },
                             contentAlignment = Alignment.Center,
-                        ) { Icon(CategoryIcons.getValue(k), k, tint = if (k == icon) Color(color) else pal.sub) }
+                        ) { Icon(vector, k, Modifier.size(22.dp), tint = if (k == icon) Color(color) else pal.sub) }
                     }
                 }
                 if (!isNew) {
@@ -283,8 +415,6 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (c.parentId == null) Chip("하위 추가", onClick = onAddChild)
-                        Chip("위로") { app.scope.launch { move(c, all, -1) } }
-                        Chip("아래로") { app.scope.launch { move(c, all, 1) } }
                         Chip("합치기") { merging = true }
                     }
                 }
@@ -298,6 +428,7 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
     )
+    if (customColor) ColorPickerDialog(Color(color), { customColor = false }) { color = it.toArgb().toLong() and 0xFFFFFFFFL; customColor = false }
     if (merging) {
         val targets = all.filter { it.type == c.type && it.id != c.id && it.parentId != c.id }
         ChoiceDialog("'${c.name}'을(를) 어디로 합칠까요?", targets.map { t -> (t.parentId?.let { p -> all.firstOrNull { it.id == p }?.name + " › " } ?: "") + t.name }, -1, { merging = false }) { i ->
@@ -305,18 +436,6 @@ private fun CategoryEditDialog(c: Category, all: List<Category>, onDismiss: () -
             merging = false
             onDismiss()
         }
-    }
-}
-
-/** Swap sort order with the neighbour among siblings. */
-private suspend fun move(c: Category, all: List<Category>, dir: Int) {
-    val siblings = all.filter { it.type == c.type && it.parentId == c.parentId }.sortedWith(compareBy({ it.sort }, { it.id }))
-    val i = siblings.indexOfFirst { it.id == c.id }
-    val j = i + dir
-    if (i < 0 || j !in siblings.indices) return
-    siblings.forEachIndexed { k, s ->
-        val sort = when (k) { i -> j; j -> i; else -> k }
-        if (s.sort != sort) app.dao.upsert(s.copy(sort = sort))
     }
 }
 

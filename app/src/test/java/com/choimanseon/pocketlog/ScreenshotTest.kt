@@ -5,10 +5,12 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.foundation.background
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
@@ -30,6 +32,7 @@ import com.choimanseon.pocketlog.ui.Screen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -70,7 +73,7 @@ class ScreenshotTest {
     @Test
     fun screens() {
         shot("0-onboarding-1")
-        compose.onNodeWithText("건너뛰기").performClick()
+        repeat(3) { compose.onNodeWithText("다음").performClick() }
         shot("0-onboarding-2")
         compose.onNodeWithText("다음").performClick()
         shot("0-onboarding-3")
@@ -101,6 +104,16 @@ class ScreenshotTest {
 
         compose.onNodeWithText("분석").performClick()
         shot("4-stats")
+        compose.onNodeWithText("술·음료").performClick() // a row under the donut opens what's behind it
+        compose.onNodeWithText("2건", substring = true).assertExists()
+        shot("4a-stats-list")
+        compose.runOnUiThread { nav().pop() }
+        compose.onNodeWithText("기간 차트").performClick()
+        shot("4b-stats-trend")
+        compose.onNodeWithText("합산").performClick()
+        shot("4c-stats-net")
+        compose.onAllNodesWithText("지출")[0].performClick() // the tab; the table header says 지출 too
+        compose.onNodeWithText("분류 차트").performClick()
 
         compose.onNodeWithText("자산").performClick()
         shot("5-assets")
@@ -116,6 +129,26 @@ class ScreenshotTest {
 
         compose.runOnUiThread { nav().push(Screen.Settings) }
         shot("8-settings")
+        compose.runOnUiThread { nav().pop() }
+
+        compose.runOnUiThread { nav().push(Screen.Categories) }
+        shot("8b-categories")
+        // long-press 배달, drag it up above 카페 and to the right: it becomes 식비's last subcategory
+        compose.onNodeWithText("배달").performTouchInput {
+            down(center)
+            advanceEventTime(800)
+            repeat(10) { moveBy(Offset(12f, -16f)); advanceEventTime(16) }
+            up()
+        }
+        compose.waitForIdle()
+        runBlocking(Dispatchers.IO) {
+            val cats = app.dao.categoriesOnce()
+            assertEquals(cats.first { it.name == "식비" }.id, cats.first { it.name == "배달" }.parentId)
+        }
+        compose.runOnUiThread { nav().pop() }
+
+        compose.runOnUiThread { nav().push(Screen.Search) }
+        shot("8c-search")
         compose.runOnUiThread { nav().pop() }
 
         app.prefs.theme = "dark"

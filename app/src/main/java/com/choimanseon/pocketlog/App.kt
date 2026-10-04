@@ -63,6 +63,7 @@ class Prefs(context: Context) {
     var autoCategory by bool("autoCategory", true)
     var myName by string("myName", "") // 내 이름: transfers to/from this name are my own accounts, not recorded
     var aiConsent by bool("aiConsent", false)
+    var aiModel by string("aiModel", "gpt-5.5") // one of Ai.models; the Worker only accepts those
     var pinHash by string("pinHash", "")
     var pinSalt by string("pinSalt", "")
     var biometric by bool("biometric", false)

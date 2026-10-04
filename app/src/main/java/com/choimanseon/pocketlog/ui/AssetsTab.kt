@@ -38,6 +38,7 @@ fun AssetsTab(nav: Nav) {
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val budgets by rememberFlow(emptyList()) { dao.budgets() }
     var editingPay by remember { mutableStateOf<com.choimanseon.pocketlog.data.PayMethod?>(null) }
+    var pickMonth by remember { mutableStateOf(false) }
 
     val spent = total(txs, TxType.EXPENSE)
     val byCat = byTopCategory(txs, splits, cats, TxType.EXPENSE).associate { it.category?.id to it.total }
@@ -47,9 +48,9 @@ fun AssetsTab(nav: Nav) {
 
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("자산", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                PeriodSwitcher(period.label(today), { offset-- }, { offset++ })
+            // same header as 내역 and 분석: the month switcher on the left (TODO #15)
+            Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                PeriodSwitcher(period.label(today), { offset-- }, { offset++ }, onLabel = { pickMonth = true })
             }
         }
         item {
@@ -86,6 +87,10 @@ fun AssetsTab(nav: Nav) {
                 p.balance?.let { Text(won(it), style = MaterialTheme.typography.titleSmall) }
             }
         }
+    }
+    if (pickMonth) MonthPickerDialog(period.month(), { pickMonth = false }) { ym ->
+        offset += java.time.temporal.ChronoUnit.MONTHS.between(period.month(), ym).toInt()
+        pickMonth = false
     }
     editingPay?.let { p ->
         InputDialog(

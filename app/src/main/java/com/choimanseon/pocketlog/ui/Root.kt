@@ -35,6 +35,7 @@ import com.choimanseon.pocketlog.ai.Scan
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.TxFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
@@ -52,6 +53,7 @@ sealed interface Screen {
     data object Search : Screen
     data class Detail(val id: Long) : Screen
     data class ScanResult(val jobId: Long) : Screen
+    data class TxList(val title: String, val filter: TxFilter) : Screen
 }
 
 /** Opens the entry sheet: new, edit (editId), or prefilled from a failed message. */
@@ -162,6 +164,7 @@ private fun ScreenContent(screen: Screen, nav: Nav, pickScreenshots: () -> Unit)
         Screen.Search -> SearchScreen(nav)
         is Screen.Detail -> DetailScreen(screen.id, nav)
         is Screen.ScanResult -> ScanScreen(screen.jobId, nav, pickScreenshots)
+        is Screen.TxList -> TxListScreen(screen.title, screen.filter, nav)
     }
 }
 

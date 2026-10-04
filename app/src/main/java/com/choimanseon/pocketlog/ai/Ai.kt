@@ -24,6 +24,17 @@ class AiError(val code: Int, message: String) : Exception(message)
  * Request/response shapes are defined in server/src/index.ts.
  */
 object Ai {
+    /**
+     * 설정 → AI 모델. Measured 2026-10-04 on synthetic notifications, merchant names and order screenshots (TODO.md #3):
+     * all four got every case right, so they differ in price and speed. A real screenshot is about 2,300 tokens in.
+     */
+    val models = listOf(
+        "gpt-6-astra" to "GPT-6 Astra · 가장 똑똑함\n스샷 1장 약 60원 · 약 5초",
+        "gpt-6.1-sol" to "GPT-6.1 Sol · 균형\n스샷 1장 약 12원 · 약 5초",
+        "gpt-5.5" to "GPT-5.5 · 지금까지 쓰던 모델\n스샷 1장 약 45원 · 약 3~6초",
+        "gpt-6-luna" to "GPT-6 Luna · 가장 저렴\n스샷 1장 약 1원 · 약 4~5초",
+    )
+
     val configured get() = BuildConfig.AI_PROXY_URL.isNotBlank()
     fun usable() = configured && app.prefs.aiConsent
 
@@ -36,7 +47,7 @@ object Ai {
             conn.readTimeout = readTimeoutMs
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("x-app-token", BuildConfig.AI_APP_TOKEN)
-            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            conn.outputStream.use { it.write(body.put("model", app.prefs.aiModel).toString().toByteArray()) }
             val code = conn.responseCode
             val text = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (code !in 200..299) throw AiError(code, runCatching { JSONObject(text).optString("error") }.getOrNull() ?: text)

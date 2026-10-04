@@ -1,6 +1,7 @@
 package com.choimanseon.pocketlog.domain
 
 import com.choimanseon.pocketlog.data.Category
+import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxSplit
@@ -9,6 +10,7 @@ import com.choimanseon.pocketlog.data.TxType
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
@@ -26,6 +28,9 @@ data class Period(val start: LocalDate, val end: LocalDate) {
     /** Month-based periods keep their start day (start day is capped at 28, so this is always valid). */
     fun shiftMonths(n: Long) = Period(start.plusMonths(n), end.plusMonths(n))
 
+    /** The month this period mostly covers: 9/25 ~ 10/24 is October's. */
+    fun month(): YearMonth = YearMonth.from(start.plusDays(14))
+
     fun label(today: LocalDate = LocalDate.now()): String {
         val last = end.minusDays(1)
         val year = if (start.year != today.year) "${start.year}년 " else ""
@@ -41,9 +46,68 @@ fun monthPeriod(date: LocalDate, startDay: Int): Period {
     return Period(start, start.plusMonths(1))
 }
 
+/** The month period that mostly covers [month] (the inverse of [Period.month]). */
+fun monthPeriod(month: YearMonth, startDay: Int) = monthPeriod(month.atDay(15), startDay)
+
 fun weekPeriod(date: LocalDate, weekStart: DayOfWeek): Period {
     val start = date.with(TemporalAdjusters.previousOrSame(weekStart))
     return Period(start, start.plusWeeks(1))
+}
+
+enum class PeriodUnit(val label: String) { WEEK("주"), MONTH("월"), QUARTER("분기"), YEAR("년"), ALL("전체"), CUSTOM("기간 지정") }
+
+/** The [unit] period containing [date]. Quarters and years are made of month periods, so they start on [startDay] too. */
+fun periodOf(unit: PeriodUnit, date: LocalDate, startDay: Int, weekStart: DayOfWeek): Period {
+    val month = monthPeriod(date, startDay).month()
+    fun from(first: YearMonth, months: Long) = Period(monthPeriod(first, startDay).start, monthPeriod(first.plusMonths(months), startDay).start)
+    return when (unit) {
+        PeriodUnit.WEEK -> weekPeriod(date, weekStart)
+        PeriodUnit.QUARTER -> from(month.withMonth((month.monthValue - 1) / 3 * 3 + 1), 3)
+        PeriodUnit.YEAR -> from(month.withMonth(1), 12)
+        else -> monthPeriod(date, startDay)
+    }
+}
+
+fun Period.shift(unit: PeriodUnit, n: Long): Period = when (unit) {
+    PeriodUnit.WEEK -> Period(start.plusWeeks(n), end.plusWeeks(n))
+    PeriodUnit.MONTH -> shiftMonths(n)
+    PeriodUnit.QUARTER -> shiftMonths(3 * n)
+    PeriodUnit.YEAR -> shiftMonths(12 * n)
+    PeriodUnit.CUSTOM -> Period(start.plusDays(days * n), end.plusDays(days * n))
+    PeriodUnit.ALL -> this
+}
+
+fun Period.label(unit: PeriodUnit, today: LocalDate = LocalDate.now()): String {
+    val last = end.minusDays(1)
+    return when (unit) {
+        PeriodUnit.MONTH -> label(today)
+        PeriodUnit.QUARTER -> month().let { "${it.year}년 ${(it.monthValue - 1) / 3 + 1}분기" }
+        PeriodUnit.YEAR -> "${month().year}년"
+        PeriodUnit.ALL -> "전체 기간"
+        else -> {
+            fun d(x: LocalDate) = (if (start.year == last.year && start.year == today.year) "" else "${x.year}.") + "${x.monthValue}.${x.dayOfMonth}"
+            if (days == 1L) d(start) else "${d(start)} ~ ${d(last)}"
+        }
+    }
+}
+
+/** Bars of the trend chart: the [unit] periods leading up to and including [p], or [p] cut into pieces. */
+fun trendBuckets(unit: PeriodUnit, p: Period, startDay: Int, weekStart: DayOfWeek): List<Pair<Period, String>> {
+    fun back(n: Int, label: (Period) -> String) = (n - 1 downTo 0).map { p.shift(unit, -it.toLong()) }.map { it to label(it) }
+    fun split(step: PeriodUnit, label: (Period) -> String): List<Pair<Period, String>> =
+        generateSequence(periodOf(step, p.start, startDay, weekStart)) { it.shift(step, 1) }.takeWhile { it.start < p.end }.map { it to label(it) }.toList()
+    return when (unit) {
+        PeriodUnit.WEEK -> back(12) { "${it.start.monthValue}/${it.start.dayOfMonth}" }
+        PeriodUnit.MONTH -> back(12) { "${it.month().monthValue}월" }
+        PeriodUnit.QUARTER -> back(8) { it.month().let { m -> "${m.year % 100}' ${(m.monthValue - 1) / 3 + 1}Q" } }
+        PeriodUnit.YEAR -> back(6) { "${it.month().year}" }
+        PeriodUnit.ALL -> split(PeriodUnit.YEAR) { "${it.month().year}" }
+        PeriodUnit.CUSTOM -> when {
+            p.days <= 31 -> (0 until p.days).map { d -> p.start.plusDays(d).let { Period(it, it.plusDays(1)) to "${it.dayOfMonth}" } }
+            p.days <= 120 -> split(PeriodUnit.WEEK) { "${it.start.monthValue}/${it.start.dayOfMonth}" }
+            else -> split(PeriodUnit.MONTH) { "${it.month().monthValue}월" }
+        }
+    }
 }
 
 fun Long.toLocalDate(): LocalDate = Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -162,6 +226,101 @@ fun byTopCategory(txs: List<Tx>, splits: List<TxSplit>, categories: List<Categor
     return sums.map { (id, v) -> CategorySum(id?.let { byId[it] }, v) }
         .filter { it.total != 0L }
         .sortedByDescending { it.total }
+}
+
+// ---------------------------------------------------------------- slices of a period (분석 · 내역 목록)
+
+/** Which transactions a list or a chart slice stands for. A top category also matches its subcategories, unless [exactCategory]. */
+data class TxFilter(
+    val start: Long,
+    val end: Long,
+    val type: TxType? = null,
+    val category: Long? = null,
+    val exactCategory: Boolean = false,
+    val uncategorized: Boolean = false,
+    val pay: Long? = null,
+    val noPay: Boolean = false,
+    val merchant: String? = null,
+    val weekday: Int? = null, // DayOfWeek value
+    val hours: IntRange? = null,
+)
+
+fun TxFilter.matches(tx: Tx, splits: List<TxSplit>?, parentOf: Map<Long, Long?>): Boolean {
+    if (!tx.countable() || tx.occurredAt < start || tx.occurredAt >= end || (type != null && tx.type != type)) return false
+    fun inCategory(id: Long?) = id != null && (id == category || (!exactCategory && parentOf[id] == category))
+    if (category != null && !inCategory(tx.categoryId) && splits.orEmpty().none { inCategory(it.categoryId) }) return false
+    if (uncategorized && (tx.categoryId != null || splits.orEmpty().any { it.categoryId != null })) return false
+    if (pay != null && tx.paymentMethodId != pay) return false
+    if (noPay && tx.paymentMethodId != null) return false
+    if (merchant != null && tx.merchant.trim() != merchant) return false
+    val at = Instant.ofEpochMilli(tx.occurredAt).atZone(ZoneId.systemDefault())
+    if (weekday != null && at.dayOfWeek.value != weekday) return false
+    return hours == null || at.hour in hours
+}
+
+enum class GroupBy(val label: String) { CATEGORY("카테고리별"), SUBCATEGORY("세부분류별"), PAY("결제수단별"), WEEKDAY("요일별"), HOUR("시간대별"), MERCHANT("내역별") }
+
+data class GroupSum(val label: String, val total: Long, val filter: TxFilter)
+
+private val hourBuckets = listOf("새벽" to 0..5, "아침" to 6..10, "점심" to 11..13, "오후" to 14..17, "저녁" to 18..21, "밤" to 22..23)
+
+/** Totals of [base]'s transactions grouped [by]; categories count splits (one order can land in several). */
+fun groupSums(txs: List<Tx>, splits: List<TxSplit>, categories: List<Category>, pays: List<PayMethod>, base: TxFilter, by: GroupBy): List<GroupSum> {
+    val parentOf = categories.associate { it.id to it.parentId }
+    val inBase = txs.filter { base.matches(it, null, parentOf) }
+    fun <K> sum(key: (Tx) -> K) = inBase.groupBy(key).mapValues { (_, v) -> v.sumOf { it.amount } }
+    val byId = categories.associateBy { it.id }
+    val groups = when (by) {
+        GroupBy.CATEGORY -> byTopCategory(inBase, splits, categories, base.type ?: TxType.EXPENSE).map { s ->
+            GroupSum(s.category?.name ?: "미분류", s.total, s.category?.let { base.copy(category = it.id) } ?: base.copy(uncategorized = true))
+        }
+        GroupBy.SUBCATEGORY -> {
+            val splitsByTx = splits.groupBy { it.txId }
+            val sums = HashMap<Long?, Long>()
+            inBase.forEach { tx ->
+                val parts = splitsByTx[tx.id]
+                if (parts.isNullOrEmpty()) sums.merge(tx.categoryId, tx.amount, Long::plus)
+                else parts.forEach { sums.merge(it.categoryId ?: tx.categoryId, it.amount, Long::plus) }
+            }
+            sums.map { (id, v) ->
+                val c = id?.let { byId[it] }
+                GroupSum(
+                    c?.let { (it.parentId?.let { p -> byId[p]?.name + " › " } ?: "") + it.name } ?: "미분류", v,
+                    c?.let { base.copy(category = it.id, exactCategory = true) } ?: base.copy(uncategorized = true),
+                )
+            }
+        }
+        GroupBy.PAY -> {
+            val names = pays.associate { it.id to it.name }
+            sum { it.paymentMethodId }.map { (id, v) -> GroupSum(id?.let { names[it] } ?: "결제수단 없음", v, if (id == null) base.copy(noPay = true) else base.copy(pay = id)) }
+        }
+        GroupBy.MERCHANT -> sum { it.merchant.trim() }.map { (m, v) -> GroupSum(m.ifEmpty { "(내역 없음)" }, v, base.copy(merchant = m)) }
+        GroupBy.WEEKDAY -> sum { it.occurredAt.toLocalDate().dayOfWeek }.toSortedMap().map { (d, v) ->
+            GroupSum(d.getDisplayName(java.time.format.TextStyle.FULL, Locale.KOREAN), v, base.copy(weekday = d.value))
+        }
+        GroupBy.HOUR -> hourBuckets.mapNotNull { (name, range) ->
+            val v = inBase.filter { Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault()).hour in range }.sumOf { it.amount }
+            if (v == 0L) null else GroupSum("$name ${range.first}~${range.last + 1}시", v, base.copy(hours = range))
+        }
+    }.filter { it.total > 0 }
+    return if (by == GroupBy.WEEKDAY || by == GroupBy.HOUR) groups else groups.sortedByDescending { it.total }
+}
+
+// ---------------------------------------------------------------- category tree (drag and drop)
+
+/**
+ * [rows] is the screen order: every top category followed by its subcategories.
+ * Puts [dragged] (a top keeps its subcategories) before rows[[gap]] (rows.size = at the end) under [parent] (null = top level)
+ * and returns the categories whose parent, sort or color changed.
+ */
+fun moveCategory(rows: List<Category>, dragged: Long, gap: Int, parent: Long?): List<Category> {
+    val moving = rows.first { it.id == dragged }
+    val siblings = rows.filter { it.parentId == parent && it.id != dragged }
+    val at = rows.take(gap).count { it.parentId == parent && it.id != dragged }
+    val color = parent?.let { p -> rows.first { it.id == p }.color } ?: moving.color
+    val reordered = siblings.toMutableList().apply { add(at, moving.copy(parentId = parent, color = color)) }
+    val before = rows.associateBy { it.id }
+    return reordered.mapIndexed { i, c -> c.copy(sort = i) }.filter { it != before[it.id] }
 }
 
 /** Spend per day of the period, for the calendar and "same point last month". */

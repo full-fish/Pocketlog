@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
 
 enum class TxType { EXPENSE, INCOME, TRANSFER }
 enum class TxStatus { CONFIRMED, PENDING_REVIEW, CANCELED }
-enum class TxSource { MANUAL, SMS, PUSH, SCREENSHOT, RECEIPT, VOICE, IMPORT }
+enum class TxSource { MANUAL, SMS, PUSH, SCREENSHOT, RECEIPT, VOICE, IMPORT, DUMMY }
 enum class PayKind { CREDIT, CHECK, BANK, PAY_MONEY, CASH }
 enum class RuleKind { CATEGORY, BLOCK, SOURCE_DEFAULT_PAYMENT }
 enum class RawStatus { PARSED, DUPLICATE, FAILED, IGNORED }

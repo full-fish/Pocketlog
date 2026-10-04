@@ -23,7 +23,7 @@ class LauncherTest {
 
     @Test
     fun permissionRequestAndFilePickerOpen() {
-        compose.onNodeWithText("건너뛰기").performClick()
+        repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("알림 접근 허용하기").performClick()
         compose.onNodeWithText("다음").performClick()
         compose.onNodeWithText("다음").performClick()

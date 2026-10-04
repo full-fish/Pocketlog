@@ -1,11 +1,23 @@
 package com.choimanseon.pocketlog
 
 import com.choimanseon.pocketlog.data.Category
+import com.choimanseon.pocketlog.data.PayKind
+import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.GroupBy
 import com.choimanseon.pocketlog.domain.Period
+import com.choimanseon.pocketlog.domain.PeriodUnit
+import com.choimanseon.pocketlog.domain.TxFilter
+import com.choimanseon.pocketlog.domain.groupSums
+import com.choimanseon.pocketlog.domain.label
+import com.choimanseon.pocketlog.domain.matches
+import com.choimanseon.pocketlog.domain.moveCategory
+import com.choimanseon.pocketlog.domain.periodOf
+import com.choimanseon.pocketlog.domain.shift
+import com.choimanseon.pocketlog.domain.trendBuckets
 import com.choimanseon.pocketlog.domain.byTopCategory
 import com.choimanseon.pocketlog.domain.evalExpr
 import com.choimanseon.pocketlog.domain.installmentRows
@@ -16,7 +28,9 @@ import com.choimanseon.pocketlog.domain.total
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 
 class DomainTest {
@@ -77,5 +91,60 @@ class DomainTest {
         val sums = byTopCategory(txs, splits, listOf(food, lunch, home), TxType.EXPENSE).associate { it.category?.name to it.total }
         assertEquals(mapOf("식비" to 17400L, "생활용품" to 9000L), sums)
         assertEquals(26400L, total(txs, TxType.EXPENSE))
+    }
+
+    @Test fun statsPeriods() {
+        val d = LocalDate.of(2026, 10, 3)
+        val mon = DayOfWeek.MONDAY
+        assertEquals(Period(LocalDate.of(2026, 9, 28), LocalDate.of(2026, 10, 5)), periodOf(PeriodUnit.WEEK, d, 1, mon))
+        assertEquals(Period(LocalDate.of(2026, 10, 1), LocalDate.of(2027, 1, 1)), periodOf(PeriodUnit.QUARTER, d, 1, mon))
+        assertEquals(Period(LocalDate.of(2026, 1, 1), LocalDate.of(2027, 1, 1)), periodOf(PeriodUnit.YEAR, d, 1, mon))
+        // payday 25: 10/3 is in 9/25 ~ 10/24, which is October's; Q4 = Oct·Nov·Dec periods
+        assertEquals(YearMonth.of(2026, 10), monthPeriod(d, 25).month())
+        assertEquals(Period(LocalDate.of(2026, 9, 25), LocalDate.of(2026, 12, 25)), periodOf(PeriodUnit.QUARTER, d, 25, mon))
+        assertEquals(monthPeriod(d, 25), monthPeriod(YearMonth.of(2026, 10), 25))
+        assertEquals("2026년 4분기", periodOf(PeriodUnit.QUARTER, d, 25, mon).label(PeriodUnit.QUARTER, d))
+        assertEquals("2025년", periodOf(PeriodUnit.YEAR, d, 1, mon).shift(PeriodUnit.YEAR, -1).label(PeriodUnit.YEAR, d))
+        assertEquals("9.28 ~ 10.4", periodOf(PeriodUnit.WEEK, d, 1, mon).label(PeriodUnit.WEEK, d))
+        val buckets = trendBuckets(PeriodUnit.MONTH, monthPeriod(d, 1), 1, mon)
+        assertEquals(12, buckets.size)
+        assertEquals(listOf("11월", "10월"), listOf(buckets.first().second, buckets.last().second))
+        assertEquals(10, trendBuckets(PeriodUnit.CUSTOM, Period(d, d.plusDays(10)), 1, mon).size) // one bar a day
+    }
+
+    @Test fun slicesOpenTheirOwnTransactions() {
+        val zone = ZoneId.systemDefault()
+        fun at(day: Int, hour: Int) = LocalDate.of(2026, 10, day).atTime(hour, 0).atZone(zone).toInstant().toEpochMilli()
+        val food = Category(id = 1, type = TxType.EXPENSE, name = "식비", icon = "", color = 0)
+        val lunch = Category(id = 2, type = TxType.EXPENSE, name = "점심", icon = "", color = 0, parentId = 1)
+        val cats = listOf(food, lunch)
+        val txs = listOf(
+            Tx(id = 1, amount = 8000, occurredAt = at(5, 12), categoryId = 2, paymentMethodId = 7, merchant = "김밥천국"), // Monday lunch
+            Tx(id = 2, amount = 3000, occurredAt = at(6, 23), categoryId = 1, merchant = "편의점 "),
+            Tx(id = 3, amount = 50000, occurredAt = at(6, 9), type = TxType.INCOME),
+        )
+        val base = TxFilter(at(1, 0), at(31, 0), TxType.EXPENSE)
+        fun check(by: GroupBy, expected: Map<String, Long>) {
+            val groups = groupSums(txs, emptyList(), cats, listOf(PayMethod(id = 7, kind = PayKind.CREDIT, name = "삼성카드")), base, by)
+            assertEquals(expected, groups.associate { it.label to it.total })
+            groups.forEach { g -> assertEquals(g.label, g.total, txs.filter { g.filter.matches(it, null, mapOf(2L to 1L)) }.sumOf { it.amount }) }
+        }
+        check(GroupBy.CATEGORY, mapOf("식비" to 11000L))
+        check(GroupBy.SUBCATEGORY, mapOf("식비 › 점심" to 8000L, "식비" to 3000L))
+        check(GroupBy.PAY, mapOf("삼성카드" to 8000L, "결제수단 없음" to 3000L))
+        check(GroupBy.MERCHANT, mapOf("김밥천국" to 8000L, "편의점" to 3000L))
+        check(GroupBy.WEEKDAY, mapOf("월요일" to 8000L, "화요일" to 3000L))
+        check(GroupBy.HOUR, mapOf("점심 11~14시" to 8000L, "밤 22~24시" to 3000L))
+    }
+
+    @Test fun dragCategoriesAcrossLevels() {
+        fun c(id: Long, parent: Long? = null, sort: Int) = Category(id = id, type = TxType.EXPENSE, name = "$id", icon = "", color = id, parentId = parent, sort = sort)
+        // A(1) [a1(11), a2(12)], B(2), C(3)
+        val rows = listOf(c(1, sort = 0), c(11, 1, 0), c(12, 1, 1), c(2, sort = 1), c(3, sort = 2))
+        fun moved(id: Long, gap: Int, parent: Long?) = moveCategory(rows, id, gap, parent).associate { it.id to (it.parentId to it.sort) }
+        assertEquals(mapOf(3L to (null to 0), 1L to (null to 1), 2L to (null to 2)), moved(3, 0, null)) // C to the top
+        assertEquals(mapOf(2L to (1L to 1), 12L to (1L to 2)), moved(2, 2, 1)) // B becomes A's second child; C keeps sort 2, still after A
+        assertEquals(1L, moveCategory(rows, 2, 2, 1).first { it.id == 2L }.color) // and takes A's color
+        assertEquals(mapOf(11L to (null to 1), 2L to (null to 2), 3L to (null to 3)), moved(11, 3, null)) // a1 out, between A and B
     }
 }

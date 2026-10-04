@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ViewList
@@ -22,6 +23,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +36,8 @@ import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.Period
+import com.choimanseon.pocketlog.domain.TxFilter
+import com.choimanseon.pocketlog.domain.matches
 import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.countable
 import com.choimanseon.pocketlog.domain.dailyExpense
@@ -48,7 +52,8 @@ import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
 
-private val typeFilters = listOf<TxType?>(null, TxType.EXPENSE, TxType.INCOME, TxType.TRANSFER)
+// no 이체 tab: money moving between my own accounts isn't recorded (TODO #7); old transfers still show under 전체
+private val typeFilters = listOf<TxType?>(null, TxType.EXPENSE, TxType.INCOME)
 
 @Composable
 fun HistoryTab(nav: Nav) {
@@ -57,21 +62,34 @@ fun HistoryTab(nav: Nav) {
     var filter by rememberSaveable { mutableIntStateOf(0) }
     var calendar by rememberSaveable { mutableStateOf(false) }
     var day by remember { mutableStateOf<LocalDate?>(null) }
+    var catFilter by rememberSaveable { mutableStateOf<Long?>(null) }
+    var payFilter by rememberSaveable { mutableStateOf<Long?>(null) }
+    var picking by remember { mutableStateOf<String?>(null) } // cat | pay | month
     val today = LocalDate.now()
     val period = remember(settings, offset) { monthPeriod(today, app.prefs.monthStartDay).shiftMonths(offset.toLong()) }
     val dao = app.dao
-    val txs by rememberFlow(emptyList(), period) { dao.txBetween(period.startMillis, period.endMillis) }
+    val all by rememberFlow(emptyList(), period) { dao.txBetween(period.startMillis, period.endMillis) }
+    val splits by rememberFlow(emptyList(), period) { dao.splitsBetween(period.startMillis, period.endMillis) }
     val cats by rememberFlow(emptyList()) { dao.categories() }
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
+    // 카테고리 · 결제수단으로 보기 (TODO #5); a category also matches its subcategories and order items (splits)
+    val txs = remember(all, splits, cats, catFilter, payFilter) {
+        val splitsByTx = splits.groupBy { it.txId }
+        fun inCat(id: Long?) = id != null && (id == catFilter || catMap[id]?.parentId == catFilter)
+        all.filter { tx ->
+            (catFilter == null || inCat(tx.categoryId) || splitsByTx[tx.id].orEmpty().any { inCat(it.categoryId) }) &&
+                (payFilter == null || tx.paymentMethodId == payFilter)
+        }
+    }
     val shown = txs.filter { typeFilters[filter] == null || it.type == typeFilters[filter] }
 
     // 다중 선택 (기획서 §4.4): long-press a row, then change the category of or delete them all
     var selected by remember { mutableStateOf(emptySet<Long>()) }
     var pickCategory by remember { mutableStateOf<TxType?>(null) }
     val selecting = selected.isNotEmpty()
-    LaunchedEffect(offset, filter, calendar, day) { selected = emptySet() }
+    LaunchedEffect(offset, filter, calendar, day, catFilter, payFilter) { selected = emptySet() }
     BackHandler(selecting) { selected = emptySet() }
     fun toggle(id: Long) { selected = if (id in selected) selected - id else selected + id }
     fun move(months: Int) { offset += months; day = null }
@@ -106,7 +124,7 @@ fun HistoryTab(nav: Nav) {
             }) { Text("카테고리") }
             TextButton(onClick = ::deleteSelected) { Text("삭제", color = pal.danger) }
         } else Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            PeriodSwitcher(period.label(today), { move(-1) }, { move(1) }, Modifier.weight(1f))
+            PeriodSwitcher(period.label(today), { move(-1) }, { move(1) }, Modifier.weight(1f), onLabel = { picking = "month" })
             IconButton(onClick = { nav.push(Screen.Search) }) { Icon(Icons.Rounded.Search, "검색") }
             IconButton(onClick = { calendar = !calendar }) {
                 Icon(if (calendar) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.CalendarMonth, if (calendar) "리스트로 보기" else "달력으로 보기")
@@ -118,7 +136,11 @@ fun HistoryTab(nav: Nav) {
             "지출 ${num(spent)} · 수입 ${num(income)} · 남은 돈 ${num(income - spent)}",
             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp),
         )
-        PillTabs(listOf("전체", "지출", "수입", "이체"), filter, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) { filter = it }
+        PillTabs(listOf("전체", "지출", "수입"), filter, Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) { filter = it }
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Chip(catFilter?.let { catMap[it]?.name } ?: "카테고리 전체", catFilter != null) { picking = "cat" }
+            Chip(payFilter?.let { payMap[it]?.name } ?: "결제수단 전체", payFilter != null) { picking = "pay" }
+        }
 
         if (calendar) {
             val daily = remember(txs) { dailyExpense(txs) }
@@ -140,6 +162,39 @@ fun HistoryTab(nav: Nav) {
         }
     }
     pickCategory?.let { type -> CategoryPickerSheet(type, cats, null, onDismiss = { pickCategory = null }) { pickCategory = null; recategorize(it) } }
+    when (picking) {
+        "cat" -> CategoryPickerSheet(typeFilters[filter] ?: TxType.EXPENSE, cats, catFilter, onDismiss = { picking = null }, noneLabel = "카테고리 전체") { catFilter = it; picking = null }
+        "pay" -> PayPickerSheet(pays, payFilter, onDismiss = { picking = null }, noneLabel = "결제수단 전체") { payFilter = it; picking = null }
+        "month" -> MonthPickerDialog(period.month(), { picking = null }) { ym ->
+            move(java.time.temporal.ChronoUnit.MONTHS.between(period.month(), ym).toInt())
+            picking = null
+        }
+    }
+}
+
+/** The transactions behind a number: a chart slice, a stats row, the home tab's top category. */
+@Composable
+fun TxListScreen(title: String, filter: TxFilter, nav: Nav) {
+    val dao = app.dao
+    val txs by rememberFlow(emptyList(), filter) { dao.txBetween(filter.start, filter.end) }
+    val splits by rememberFlow(emptyList(), filter) { dao.splitsBetween(filter.start, filter.end) }
+    val cats by rememberFlow(emptyList()) { dao.categories() }
+    val pays by rememberFlow(emptyList()) { dao.payMethods() }
+    val catMap = cats.associateBy { it.id }
+    val payMap = pays.associateBy { it.id }
+    val shown = remember(txs, splits, cats, filter) {
+        val parentOf = cats.associate { it.id to it.parentId }
+        val splitsByTx = splits.groupBy { it.txId }
+        txs.filter { filter.matches(it, splitsByTx[it.id], parentOf) }
+    }
+    PageScaffold(title, onBack = nav::pop) {
+        val sums = if (filter.type == null) "수입 ${num(total(shown, TxType.INCOME))} · 지출 ${num(total(shown, TxType.EXPENSE))}" else "합계 ${num(shown.sumOf { it.amount })}"
+        Text("${shown.size}건 · $sums", style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+        if (shown.isEmpty()) EmptyState(Icons.Rounded.Inbox, "내역이 없어요")
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
+            items(shown, key = { it.id }) { tx -> TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) } }
+        }
+    }
 }
 
 @Composable
@@ -241,13 +296,14 @@ private fun Calendar(period: Period, daily: Map<LocalDate, Long>, selected: Loca
 fun SearchScreen(nav: Nav) {
     var q by rememberSaveable { mutableStateOf("") }
     var cat by rememberSaveable { mutableStateOf<Long?>(null) }
+    var pay by rememberSaveable { mutableStateOf<Long?>(null) }
     var min by rememberSaveable { mutableStateOf("") }
     var max by rememberSaveable { mutableStateOf("") }
-    var picking by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf<String?>(null) }
     val dao = app.dao
     val cats by rememberFlow(emptyList()) { dao.categories() }
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
-    val results by rememberFlow(emptyList(), q, cat, min, max) { dao.search(q.trim(), cat, min.toLongOrNull(), max.toLongOrNull()) }
+    val results by rememberFlow(emptyList(), q, cat, pay, min, max) { dao.search(q.trim(), cat, pay, min.toLongOrNull(), max.toLongOrNull()) }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
 
@@ -256,18 +312,19 @@ fun SearchScreen(nav: Nav) {
             value = q, onValueChange = { q = it }, singleLine = true, placeholder = { Text("가맹점, 메모") },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), shape = RoundedCornerShape(14.dp),
         )
-        FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip(cat?.let { catMap[it]?.name } ?: "카테고리 전체", selected = cat != null) { picking = true }
-            OutlinedTextField(
-                value = min, onValueChange = { min = it.filter(Char::isDigit) }, singleLine = true, placeholder = { Text("최소 금액") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(120.dp),
-            )
-            OutlinedTextField(
-                value = max, onValueChange = { max = it.filter(Char::isDigit) }, singleLine = true, placeholder = { Text("최대 금액") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.width(120.dp),
-            )
+        FlowRow(
+            Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            Chip(cat?.let { catMap[it]?.name } ?: "카테고리 전체", selected = cat != null) { picking = "cat" }
+            Chip(pay?.let { payMap[it]?.name } ?: "결제수단 전체", selected = pay != null) { picking = "pay" }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AmountChip(min, { min = it }, "최소 금액")
+                Text("~", color = pal.sub, modifier = Modifier.padding(horizontal = 6.dp))
+                AmountChip(max, { max = it }, "최대 금액")
+            }
         }
-        if (q.isBlank() && cat == null && min.isBlank() && max.isBlank()) EmptyState(Icons.Rounded.Search, "가맹점이나 메모로 찾아보세요", "전체 기간에서 찾아요")
+        if (q.isBlank() && cat == null && pay == null && min.isBlank() && max.isBlank()) EmptyState(Icons.Rounded.Search, "가맹점이나 메모로 찾아보세요", "전체 기간에서 찾아요")
         else LazyColumn(Modifier.weight(1f)) {
             item { Text("${results.size}건", style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
             items(results, key = { it.id }) { tx ->
@@ -275,5 +332,27 @@ fun SearchScreen(nav: Nav) {
             }
         }
     }
-    if (picking) CategoryPickerSheet(TxType.EXPENSE, cats, cat, onDismiss = { picking = false }) { cat = it; picking = false }
+    when (picking) {
+        "cat" -> CategoryPickerSheet(TxType.EXPENSE, cats, cat, onDismiss = { picking = null }, noneLabel = "카테고리 전체") { cat = it; picking = null }
+        "pay" -> PayPickerSheet(pays, pay, onDismiss = { picking = null }, noneLabel = "결제수단 전체") { pay = it; picking = null }
+    }
+}
+
+/** A number field the size of a [Chip], so the filter row lines up (TODO #1). */
+@Composable
+private fun AmountChip(value: String, onChange: (String) -> Unit, hint: String) {
+    val shape = RoundedCornerShape(50)
+    BasicTextField(
+        value = if (value.isEmpty()) "" else num(value.toLong()), onValueChange = { onChange(it.filter(Char::isDigit).take(12)) }, singleLine = true,
+        textStyle = MaterialTheme.typography.labelMedium.copy(color = pal.text, textAlign = TextAlign.Center),
+        cursorBrush = SolidColor(pal.brand),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.width(92.dp).clip(shape).border(1.dp, if (value.isEmpty()) pal.surface2 else pal.brand, shape).padding(horizontal = 12.dp, vertical = 9.dp),
+        decorationBox = { inner ->
+            Box(contentAlignment = Alignment.Center) {
+                if (value.isEmpty()) Text(hint, style = MaterialTheme.typography.labelMedium, color = pal.faint, maxLines = 1)
+                inner()
+            }
+        },
+    )
 }
