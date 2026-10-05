@@ -2,8 +2,10 @@ package com.choimanseon.pocketlog
 
 import android.content.Intent
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -25,10 +27,11 @@ class LauncherTest {
     fun permissionRequestAndFilePickerOpen() {
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("알림 접근 허용하기").performClick()
-        compose.onNodeWithText("다음").performClick()
-        compose.onNodeWithText("다음").performClick()
-        compose.onNodeWithText("똑똑가계부에서 가져오기").performClick() // last onboarding page → backup screen
-        compose.onNodeWithText("똑똑가계부에서 가져오기").performClick() // the file picker
+        repeat(2) { compose.onNodeWithText("다음").performClick() }
+        compose.onNodeWithText("시작하기").performClick()
+        compose.onNodeWithContentDescription("설정").performClick()
+        compose.onNodeWithText("백업 · 복구 · 초기화").performScrollTo().performClick()
+        compose.onNodeWithText("똑똑가계부에서 가져오기").performScrollTo().performClick() // the file picker
         assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(compose.activity).nextStartedActivityForResult.intent.action)
     }
 }

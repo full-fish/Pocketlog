@@ -37,6 +37,7 @@ import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.num
+import com.choimanseon.pocketlog.domain.label
 import com.choimanseon.pocketlog.domain.signedAmount
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -54,6 +55,7 @@ fun DetailScreen(id: Long, nav: Nav) {
     val raw by rememberFlow<RawMessage?>(null, tx?.rawMessageId) { dao.rawMessage(tx?.rawMessageId ?: -1) }
     val job by rememberFlow(null, tx?.scanJobId) { dao.scanJob(tx?.scanJobId ?: -1) }
     val plan by rememberFlow(emptyList(), id) { dao.purchaseRowsFlow(id) }
+    val tagIds by rememberFlow(emptyList(), id) { dao.tagsOf(id) }
     var confirmDelete by remember { mutableStateOf(false) }
     val t = tx
 
@@ -81,8 +83,9 @@ fun DetailScreen(id: Long, nav: Nav) {
             }
             PCard(Modifier.padding(horizontal = 16.dp)) {
                 InfoRow("날짜", t.occurredAt.fmt(DateTimeFormatter.ofPattern("yyyy년 M월 d일 (E) HH:mm", java.util.Locale.KOREAN)))
-                InfoRow("종류", when (t.type) { TxType.EXPENSE -> "지출"; TxType.INCOME -> "수입"; TxType.TRANSFER -> "이체" })
-                if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.let { c -> "${c.parentId?.let { catMap[it]?.name + " › " }.orEmpty()}${c.name}" } ?: "미분류")
+                InfoRow("종류", t.type.label)
+                if (t.type != TxType.TRANSFER) InfoRow("카테고리", cat?.name ?: "미분류")
+                if (tagIds.isNotEmpty()) InfoRow("태그", tagIds.mapNotNull { catMap[it]?.name }.joinToString(" · "))
                 InfoRow(if (t.type == TxType.TRANSFER) "보낸 곳" else "결제수단", t.paymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.type == TxType.TRANSFER) InfoRow("받은 곳", t.toPaymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월" + if (plan.size > 1) " · 전체 ${num(plan.sumOf { it.amount })}원" else "")
@@ -158,7 +161,8 @@ fun Thumb(file: File, modifier: Modifier = Modifier) {
     LaunchedEffect(file) {
         bmp = withContext(Dispatchers.IO) {
             runCatching {
-                val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeFile(file.path, it) }
+                val opts = BitmapFactory.Options().apply { inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 640).coerceAtLeast(1) }
                 BitmapFactory.decodeFile(file.path, opts)?.asImageBitmap()
             }.getOrNull()
         }

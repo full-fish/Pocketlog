@@ -13,8 +13,9 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
-import com.choimanseon.pocketlog.domain.monthPeriod
-import com.choimanseon.pocketlog.domain.total
+import com.choimanseon.pocketlog.domain.budgetSpan
+import com.choimanseon.pocketlog.domain.budgetUses
+import com.choimanseon.pocketlog.domain.tops
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -55,6 +56,8 @@ private val payMoneyWords = Regex("페이|머니|pay", RegexOption.IGNORE_CASE)
 private val transitWords = Regex("이즐|티머니|캐시비|레일플러스|교통카드", RegexOption.IGNORE_CASE) // 교통카드 충전은 교통비
 private val cardWords = Regex("카드")
 private val preAuthWords = Regex("가승인|선승인")
+private val savingWords = Regex("적금|청약|정기예금|ISA|IRP|연금저축|증권|투자|펀드")
+private val investWords = Regex("증권|투자|펀드|주식|ISA|IRP|연금")
 
 /**
  * The counterparty of a bank transfer is me. Exact full name only: "한전(최만선)" is a real bill, and masked
@@ -111,16 +114,26 @@ object AutoInput {
         val dao = app.dao
         val at = p.at ?: postTime
         val pay = resolvePay(p)
-        val amount = p.amount ?: 0L
+        // only a foreign amount: the day's rate gives the won (TODO #35)
+        val fx = if (p.amount == null) Fx.toWon(p.foreign) else null
+        val amount = p.amount ?: fx?.first ?: 0L
         val nearby = dao.txAround(at - 5 * MIN, at + 5 * MIN)
 
         if (p.balance != null && pay != null && pay.kind in setOf(PayKind.BANK, PayKind.PAY_MONEY)) {
             dao.upsert(pay.copy(balance = p.balance))
         }
+        if ((p.kind == MsgKind.WITHDRAW || p.kind == MsgKind.DEPOSIT) && amount > 0 && savingWords.containsMatchIn("${p.merchant} $text") && "이자" !in p.merchant) {
+            return saving(p, amount, at, pay, nearby, source, rawId, "${p.merchant} $text")
+        }
         if (notMoneyInOrOut(p, pay, amount, nearby, text)) return null to RawStatus.IGNORED
 
-        // a cancel looks exactly like its original payment, so it is matched in its own branch below
-        if (p.kind != MsgKind.CANCEL) nearby.firstOrNull { amount > 0 && isDuplicate(it.copy(amount = paid(it) ?: return@firstOrNull false), amount, at, pay?.id, p.merchant) }?.let {
+        // a cancel looks exactly like its original payment, so it is matched in its own branch below.
+        // The same app never reports one payment twice with different text: two 1,000원 at one shop minutes apart are two payments (TODO #48)
+        val sender = dao.senderOf(rawId)
+        if (p.kind != MsgKind.CANCEL) nearby.firstOrNull {
+            amount > 0 && (it.rawMessageId == null || dao.senderOf(it.rawMessageId) != sender) &&
+                isDuplicate(it.copy(amount = paid(it) ?: return@firstOrNull false), amount, at, pay?.id, p.merchant)
+        }?.let {
             return it.id to RawStatus.DUPLICATE
         }
 
@@ -128,10 +141,11 @@ object AutoInput {
             amount = amount, occurredAt = at, merchant = p.merchant, paymentMethodId = pay?.id,
             installmentMonths = p.installment, source = source, rawMessageId = rawId,
         )
+        var tags = emptyList<Long>()
         val tx: Tx = when (p.kind) {
             MsgKind.CANCEL -> {
                 val matches = dao.txAround(at - 31 * DAY, at + DAY).filter {
-                    it.type == TxType.EXPENSE && paid(it) == amount &&
+                    it.type == TxType.EXPENSE && (paid(it) == amount || (p.foreign != null && it.originalAmount == p.foreign)) &&
                         (it.paymentMethodId == null || pay == null || it.paymentMethodId == pay.id) && similar(it.merchant, p.merchant)
                 }
                 val original = matches.firstOrNull { it.status != TxStatus.CANCELED }
@@ -146,20 +160,47 @@ object AutoInput {
                 val cat = dao.txAround(at - 31 * DAY, at).firstOrNull { similar(it.merchant, p.merchant) && it.categoryId != null }?.categoryId
                 base.copy(amount = -amount, memo = "결제 취소", categoryId = cat, installmentMonths = 0)
             }
-            MsgKind.DEPOSIT -> base.copy(type = TxType.INCOME, categoryId = Categorizer.categorize(p.merchant, TxType.INCOME))
-            MsgKind.WITHDRAW, MsgKind.SPEND -> base.copy(categoryId = Categorizer.categorize(p.merchant, TxType.EXPENSE))
+            MsgKind.DEPOSIT -> Categorizer.categorize(p.merchant, TxType.INCOME).let { tags = it?.tags.orEmpty(); base.copy(type = TxType.INCOME, categoryId = it?.category) }
+            MsgKind.WITHDRAW, MsgKind.SPEND -> Categorizer.categorize(p.merchant, TxType.EXPENSE).let { tags = it?.tags.orEmpty(); base.copy(categoryId = it?.category) }
         }.let { t ->
-            if (p.amount == null) t.copy(status = TxStatus.PENDING_REVIEW, originalAmount = p.foreign, memo = "해외 결제: 원화 금액을 확인해 주세요")
+            if (p.amount == null && fx != null) t.copy(
+                originalAmount = p.foreign,
+                memo = listOf(t.memo, "해외 결제 · 1 ${p.foreign!!.take(3)} = ${"%,.2f".format(fx.second)}원으로 환산 (카드사 청구액과 조금 다를 수 있어요)").filter { it.isNotBlank() }.joinToString(" · "),
+            )
+            else if (p.amount == null) t.copy(status = TxStatus.PENDING_REVIEW, originalAmount = p.foreign, memo = "해외 결제: 원화 금액을 확인해 주세요")
             else if (t.merchant.isBlank()) t.copy(status = TxStatus.PENDING_REVIEW)
             else t
         }
 
         val id = dao.insertPurchase(tx)
+        if (tags.isNotEmpty()) dao.setTags(id, tags)
         val saved = tx.copy(id = id) // the whole purchase, also for an installment plan
         val category = saved.categoryId?.let { c -> dao.categoriesOnce().firstOrNull { it.id == c } }
         if (saved.type != TxType.TRANSFER) Notify.saved(saved, category, saved.status == TxStatus.PENDING_REVIEW)
         if (saved.type == TxType.EXPENSE && saved.categoryId == null) app.scope.launch { Categorizer.categorizeWithAi(saved) }
         if (saved.type == TxType.EXPENSE) checkBudget()
+        return id to RawStatus.PARSED
+    }
+
+    /**
+     * Money moved into savings or investments (TODO #28): kept, so neither spending nor an ignored own-account transfer.
+     * Put in is positive, taken out negative. The savings account's own notice of the same move is the other half.
+     */
+    private suspend fun saving(p: Parsed, amount: Long, at: Long, pay: PayMethod?, nearby: List<Tx>, source: TxSource, rawId: Long, text: String): Pair<Long?, RawStatus> {
+        val dao = app.dao
+        nearby.firstOrNull { it.type == TxType.SAVING && kotlin.math.abs(it.amount) == amount }?.let { return it.id to RawStatus.DUPLICATE }
+        val cats = dao.categoriesOnce()
+        val tops = cats.tops(TxType.SAVING).filter { !it.hidden }
+        val top = tops.firstOrNull { it.name == if (investWords.containsMatchIn(text)) "투자" else "저축" } ?: tops.firstOrNull()
+        val hay = text.replace("예금주", "")
+        val tags = cats.filter { top != null && it.parentId == top.id && it.name in hay }.map { it.id }
+        val tx = Tx(
+            type = TxType.SAVING, amount = if (p.kind == MsgKind.WITHDRAW) amount else -amount, occurredAt = at, merchant = p.merchant,
+            categoryId = top?.id, paymentMethodId = pay?.id, source = source, rawMessageId = rawId,
+        )
+        val id = dao.insert(tx)
+        dao.setTags(id, tags)
+        Notify.saved(tx.copy(id = id), top, needsReview = false)
         return id to RawStatus.PARSED
     }
 
@@ -210,17 +251,22 @@ object AutoInput {
             (pm.issuer.isNotEmpty() && name.contains(pm.issuer)))
     }
 
+    /** 50 · 80 · 100% of a whole budget, once per step and period. prefs.budgetAlert: "WEEK=2026-10-05:80;MONTH=2026-10-01:50". */
     suspend fun checkBudget() {
         val dao = app.dao
-        val budget = dao.budgetsOnce().firstOrNull { it.categoryId == null && it.amount > 0 } ?: return
-        val period = monthPeriod(LocalDate.now(), app.prefs.monthStartDay)
-        val spent = total(dao.txBetweenOnce(period.startMillis, period.endMillis), TxType.EXPENSE)
-        val percent = (spent * 100 / budget.amount).toInt()
-        val step = listOf(100, 80, 50).firstOrNull { percent >= it } ?: return
-        val key = "${period.start}:$step"
-        val last = app.prefs.budgetAlert
-        if (last.substringBefore(':') == period.start.toString() && (last.substringAfter(':').toIntOrNull() ?: 0) >= step) return
-        app.prefs.budgetAlert = key
-        Notify.budget(step, budget.amount - spent)
+        val budgets = dao.budgetsOnce().filter { it.categoryId == null && it.amount > 0 && app.prefs.shows(it) }
+        if (budgets.isEmpty()) return
+        val today = LocalDate.now()
+        val weekStart = java.time.DayOfWeek.of(app.prefs.weekStart)
+        val span = budgetSpan(budgets, today, app.prefs.monthStartDay, weekStart)
+        val sent = app.prefs.budgetAlert.split(';').filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }.toMutableMap()
+        for (u in budgetUses(budgets, dao.txBetweenOnce(span.startMillis, span.endMillis), emptyList(), emptyList(), today, app.prefs.monthStartDay, weekStart)) {
+            val step = listOf(100, 80, 50).firstOrNull { u.percent >= it } ?: continue
+            val last = sent[u.budget.period.name]
+            if (last?.substringBefore(':') == u.period.start.toString() && (last.substringAfter(':').toIntOrNull() ?: 0) >= step) continue
+            sent[u.budget.period.name] = "${u.period.start}:$step"
+            Notify.budget(u.label, step, u.left)
+        }
+        app.prefs.budgetAlert = sent.entries.joinToString(";") { "${it.key}=${it.value}" }
     }
 }

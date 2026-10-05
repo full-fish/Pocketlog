@@ -46,6 +46,19 @@ class CardParserTest {
         assertEquals("KB국민체크", p.payName)
     }
 
+    /** TODO #29: "승인시각" and "고객명" lines were left over as the merchant "시각". */
+    @Test fun kbCheckCardLabels() {
+        val p = parse("[Web발신] KB국민체크1234\n승인\n147,900원\n행복수산시장\n고객명 홍*동님\n승인시각 10/02 20:55", title = "KB국민카드")
+        assertEquals(147900L, p.amount)
+        assertEquals("행복수산시장", p.merchant)
+        assertEquals(PayKind.CHECK, p.payKind)
+        assertEquals("1234", p.last4)
+        assertEquals(at(10, 2, 20, 55), p.at)
+        // TODO #48: the 18:44 message that was never recorded parses fine, so the notification itself never arrived
+        val cu = parse("[Web발신] KB국민체크1234\n승인\n7,700원\n씨유 행복점\n고객명 홍*동님\n승인시각 10/05 18:44", title = "KB국민카드")
+        assertEquals(7700L to "씨유 행복점", cu.amount to cu.merchant)
+    }
+
     @Test fun shinhanSingleLine() {
         val p = parse("[Web발신]\n신한카드(1234)승인 홍*동 45,000원(일시불)10/02 12:30 스타벅스코리아 누적1,234,560원")
         assertEquals(45000L, p.amount)

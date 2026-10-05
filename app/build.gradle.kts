@@ -28,9 +28,7 @@ android {
     }
 
     buildTypes {
-        debug {
-            applicationIdSuffix = ".dev"
-        }
+        // no ".dev" suffix (TODO #50): the debug APK is the one in use, under the real package name
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -71,6 +69,11 @@ dependencies {
     // biometric pulls in fragment 1.2.5, whose FragmentActivity crashes every permission request and file picker
     // ("Can only use lower 16 bits for requestCode"); MainActivity is a FragmentActivity for BiometricPrompt
     implementation("androidx.fragment:fragment-ktx:1.9.1")
+    // Google 드라이브 백업: sign-in and Drive consent (AuthorizationClient); the Drive calls themselves are plain REST
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
+    // the daily job: 반복 기록, AI 월간 리포트, widget refresh
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("androidx.glance:glance-appwidget:1.2.0")
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")

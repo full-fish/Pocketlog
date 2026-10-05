@@ -12,6 +12,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.foundation.background
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.swipeLeft
@@ -76,10 +77,11 @@ class ScreenshotTest {
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         shot("0-onboarding-2")
         compose.onNodeWithText("다음").performClick()
-        shot("0-onboarding-3")
+        compose.onNodeWithText("배터리 제한 없음으로 하기").assertExists() // TODO #46
+        shot("0-onboarding-3-battery")
         compose.onNodeWithText("다음").performClick()
         shot("0-onboarding-4")
-        compose.onNodeWithText("새로 시작하기").performClick()
+        compose.onNodeWithText("시작하기").performClick()
 
         val (scanId, orderId) = runBlocking(Dispatchers.IO) { seedSample() }
         compose.waitForIdle()
@@ -93,6 +95,8 @@ class ScreenshotTest {
         compose.onNodeWithText(period.shiftMonths(1).label()).assertExists()
         compose.onNodeWithText("남은 돈", substring = true).performTouchInput { swipeRight() }
         compose.onNodeWithText(period.label()).assertExists()
+        // the month's rows come back from Room on another thread, which Compose's idling doesn't wait for
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("김밥천국").fetchSemanticsNodes().isNotEmpty() }
         // long-press starts selecting
         compose.onNodeWithText("김밥천국").performTouchInput { longClick() }
         compose.onNodeWithText("스타벅스코리아").performClick()
@@ -104,16 +108,40 @@ class ScreenshotTest {
 
         compose.onNodeWithText("분석").performClick()
         shot("4-stats")
-        compose.onNodeWithText("술·음료").performClick() // a row under the donut opens what's behind it
+        compose.onNodeWithText("술·유흥").performClick() // a row under the donut opens what's behind it
         compose.onNodeWithText("2건", substring = true).assertExists()
         shot("4a-stats-list")
         compose.runOnUiThread { nav().pop() }
-        compose.onNodeWithText("기간 차트").performClick()
+        compose.onNodeWithText("기간").performClick()
         shot("4b-stats-trend")
+        // dragging the chart one and a half bars to the right goes back one period
+        compose.onNodeWithContentDescription("기간별 차트").performTouchInput {
+            swipeRight(startX = left + 10f, endX = left + 10f + viewConfiguration.touchSlop + width / 12f * 1.5f)
+        }
+        compose.onNodeWithText(period.shiftMonths(-1).label()).assertExists()
+        compose.onNodeWithContentDescription("다음").performClick()
+        compose.onNodeWithText(period.label()).assertExists()
         compose.onNodeWithText("합산").performClick()
         shot("4c-stats-net")
         compose.onAllNodesWithText("지출")[0].performClick() // the tab; the table header says 지출 too
-        compose.onNodeWithText("분류 차트").performClick()
+        compose.onNodeWithText("분류").performClick()
+        // tags as slices: a tagged order counts once per tag
+        compose.onNodeWithText("카테고리별 ▾").performClick()
+        compose.onNodeWithText("태그별").performClick()
+        compose.onNodeWithText("야식").assertExists() // the tag's name alone (TODO #42)
+        compose.onNodeWithText("친구·모임").assertExists()
+        shot("4d-stats-tags")
+        compose.onNodeWithText("태그별 ▾").performClick()
+        compose.onNodeWithText("카테고리별").performClick()
+        compose.onNodeWithText("저축").performClick()
+        compose.onNodeWithText("모은 돈").assertExists()
+        shot("4e-stats-saving")
+        compose.onAllNodesWithText("지출")[0].performClick()
+        compose.onNodeWithText("패턴").performClick()
+        compose.onNodeWithText("요일 × 시간대").assertExists()
+        compose.onNodeWithText("자주 가는 곳").assertExists()
+        shot("4f-stats-pattern")
+        compose.onNodeWithText("분류").performClick()
 
         compose.onNodeWithText("자산").performClick()
         shot("5-assets")
@@ -133,17 +161,17 @@ class ScreenshotTest {
 
         compose.runOnUiThread { nav().push(Screen.Categories) }
         shot("8b-categories")
-        // long-press 배달, drag it up above 카페 and to the right: it becomes 식비's last subcategory
-        compose.onNodeWithText("배달").performTouchInput {
+        // long-press the tag 야식 (식비's last) and drag it down past "+ 태그 추가" and 카페·간식: it becomes 카페·간식's first tag
+        compose.onNodeWithText("야식").performTouchInput {
             down(center)
             advanceEventTime(800)
-            repeat(10) { moveBy(Offset(12f, -16f)); advanceEventTime(16) }
+            repeat(10) { moveBy(Offset(0f, height * 0.25f)); advanceEventTime(16) }
             up()
         }
         compose.waitForIdle()
         runBlocking(Dispatchers.IO) {
             val cats = app.dao.categoriesOnce()
-            assertEquals(cats.first { it.name == "식비" }.id, cats.first { it.name == "배달" }.parentId)
+            assertEquals(cats.first { it.name == "카페·간식" }.id, cats.first { it.name == "야식" }.parentId)
         }
         compose.runOnUiThread { nav().pop() }
 
@@ -151,8 +179,44 @@ class ScreenshotTest {
         shot("8c-search")
         compose.runOnUiThread { nav().pop() }
 
+        compose.runOnUiThread { nav().push(Screen.BudgetEdit) }
+        compose.onNodeWithText("주 · 월 · 연 통일").assertExists() // TODO #37
+        shot("8d-budget-edit")
+        compose.runOnUiThread { nav().pop() }
+
+        // the report's charts (TODO #41), from the sample month's own numbers
+        val reportStart = runBlocking(Dispatchers.IO) { seedReport() }
+        compose.runOnUiThread { nav().push(Screen.Reports(reportStart)) }
+        shot("8e-report-1")
+        listOf("카테고리", "자주 간 곳", "다음 달에 해 볼 것").forEachIndexed { i, section ->
+            compose.onNodeWithText(section).performScrollTo()
+            shot("8e-report-${i + 2}")
+        }
+        compose.runOnUiThread { nav().pop() }
+
+        // 즐겨찾기 opens as a list beside the merchant field and fills the form (TODO #47)
+        runBlocking(Dispatchers.IO) { app.dao.upsert(com.choimanseon.pocketlog.data.Favorite(amount = 4500, merchant = "단골 김밥")) }
+        compose.runOnUiThread { nav().entry = com.choimanseon.pocketlog.ui.Entry() }
+        compose.onNodeWithText("즐겨찾기").performClick()
+        compose.onNodeWithText("단골 김밥").performClick()
+        compose.waitForIdle()
+        compose.onAllNodesWithText("4,500원")[0].assertExists()
+        compose.runOnUiThread { nav().entry = null }
+
         app.prefs.theme = "dark"
         shot("10-home-dark")
+    }
+
+    private suspend fun seedReport(): String {
+        val period = monthPeriod(LocalDate.now(), app.prefs.monthStartDay)
+        val facts = com.choimanseon.pocketlog.ai.MonthlyReport.facts(period)!!
+        val text = org.json.JSONObject(
+            """{"headline":"술값이 늘고 외식은 그대로였어요","summary":"이번 달 지출은 지난달보다 늘었어요. 술·유흥이 가장 많이 늘었어요.",
+            "highlights":[{"title":"술·유흥이 늘었어요","detail":"데일리샷 두 번이 컸어요."},{"title":"식비는 예산 안","detail":"300,000원 중 일부만 썼어요."},
+            {"title":"구독 17,000원","detail":"넷플릭스 한 건이에요."}],"budget":"전체 예산 안에서 썼어요.","suggestions":["술은 주 1회로","구독 점검하기"],"praise":"예산을 지켰어요."}""",
+        )
+        app.dao.upsert(com.choimanseon.pocketlog.data.Report(period.start.toString(), period.end.toString(), org.json.JSONObject().put("facts", facts).put("text", text).toString()))
+        return period.start.toString()
     }
 
     private suspend fun seedSample(): Pair<Long, Long> {
@@ -161,8 +225,10 @@ class ScreenshotTest {
         app.db.clearAllTables()
         dao.seedIfEmpty()
         app.prefs.monthStartDay = 25
-        val cats = dao.categoriesOnce().associateBy { it.name }
+        val all = dao.categoriesOnce()
+        val cats = all.filter { it.parentId == null }.associateBy { it.name }
         fun cat(name: String) = cats.getValue(name).id
+        val tagged = mutableMapOf<String, List<String>>() // merchant → tag names
         val samsung = dao.upsert(PayMethod(kind = PayKind.CREDIT, name = "삼성카드(1234)", issuer = "삼성", last4 = "1234"))
         val kb = dao.upsert(PayMethod(kind = PayKind.CHECK, name = "KB국민체크", issuer = "KB국민"))
         val toss = dao.upsert(PayMethod(kind = PayKind.PAY_MONEY, name = "토스머니", issuer = "토스"))
@@ -179,25 +245,35 @@ class ScreenshotTest {
         }
         val txs = listOf(
             Tx(amount = 8000, occurredAt = at(0, 12, 10), merchant = "김밥천국", categoryId = cat("식비"), paymentMethodId = samsung, source = TxSource.SMS),
-            Tx(amount = 5600, occurredAt = at(0, 9, 5), merchant = "스타벅스코리아", categoryId = cat("카페"), paymentMethodId = kb, source = TxSource.PUSH),
-            Tx(amount = 39900, occurredAt = at(1, 19, 30), merchant = "(주)데일리샷", categoryId = cat("술·음료"), paymentMethodId = kb, source = TxSource.SMS),
-            Tx(amount = 1550, occurredAt = at(1, 18, 50), merchant = "ezl 지하철 1건 이용", categoryId = cat("교통"), paymentMethodId = toss, source = TxSource.PUSH),
-            Tx(amount = 2400, occurredAt = at(3, 19, 25), merchant = "CU(씨유)자양승일점", categoryId = cat("편의점"), paymentMethodId = samsung, source = TxSource.SMS),
+            Tx(amount = 5600, occurredAt = at(0, 9, 5), merchant = "스타벅스코리아", categoryId = cat("카페·간식"), paymentMethodId = kb, source = TxSource.PUSH),
+            Tx(amount = 39900, occurredAt = at(1, 19, 30), merchant = "(주)데일리샷", categoryId = cat("술·유흥"), paymentMethodId = kb, source = TxSource.SMS),
+            Tx(amount = 1550, occurredAt = at(1, 18, 50), merchant = "ezl 지하철 1건 이용", categoryId = cat("교통·차량"), paymentMethodId = toss, source = TxSource.PUSH),
+            Tx(amount = 2400, occurredAt = at(3, 19, 25), merchant = "CU(씨유)자양승일점", categoryId = cat("카페·간식"), paymentMethodId = samsung, source = TxSource.SMS),
             Tx(amount = 17000, occurredAt = at(4, 3, 15), merchant = "넷플릭스", categoryId = cat("구독"), paymentMethodId = samsung, source = TxSource.SMS),
             Tx(amount = 0, occurredAt = at(4, 3, 16), merchant = "NETFLIX.COM", paymentMethodId = samsung, source = TxSource.SMS, status = TxStatus.PENDING_REVIEW, originalAmount = "USD 12.99"),
             Tx(type = TxType.INCOME, amount = 3_200_000, occurredAt = at(6, 9, 0), merchant = "(주)회사이름 급여", categoryId = cat("급여"), paymentMethodId = kakao, source = TxSource.PUSH),
             Tx(type = TxType.TRANSFER, amount = 50_000, occurredAt = at(5, 10, 0), merchant = "쿠팡페이", paymentMethodId = kakao, toPaymentMethodId = coupang, source = TxSource.PUSH, memo = "충전"),
-            Tx(amount = 23000, occurredAt = at(6, 20, 0), merchant = "교촌치킨", categoryId = cat("배달"), paymentMethodId = samsung, source = TxSource.SMS),
+            Tx(amount = 23000, occurredAt = at(6, 20, 0), merchant = "교촌치킨", categoryId = cat("식비"), paymentMethodId = samsung, source = TxSource.SMS),
+            Tx(type = TxType.SAVING, amount = 500_000, occurredAt = at(5, 9, 0), merchant = "카카오뱅크 적금", categoryId = cat("저축"), paymentMethodId = kakao, source = TxSource.PUSH),
             Tx(amount = 12300, occurredAt = at(2, 19, 43), merchant = "주식회사앨리스프랜즈", categoryId = cat("쇼핑"), paymentMethodId = samsung, source = TxSource.SMS, status = TxStatus.CANCELED),
         )
-        txs.forEach { dao.insert(it) }
+        tagged += mapOf(
+            "김밥천국" to listOf("외식"), "스타벅스코리아" to listOf("커피"), "(주)데일리샷" to listOf("홈술"), "ezl 지하철 1건 이용" to listOf("대중교통"),
+            "CU(씨유)자양승일점" to listOf("편의점"), "넷플릭스" to listOf("OTT"), "교촌치킨" to listOf("야식", "친구·모임"), "카카오뱅크 적금" to listOf("적금"),
+        )
+        txs.forEach { tx ->
+            val id = dao.insert(tx)
+            val parent = tx.categoryId?.let { c -> all.first { it.id == c } }
+            val shared = all.firstOrNull { it.tagGroup && it.type == tx.type }
+            tagged[tx.merchant]?.let { names -> dao.setTags(id, names.map { n -> all.first { it.name == n && (it.parentId == parent?.id || it.parentId == shared?.id) }.id }) }
+        }
         val orderId = dao.insertWithSplits(
-            Tx(amount = 52300, occurredAt = at(2, 12, 0), merchant = "쿠팡", memo = "데일리샷 와인 외 2개", categoryId = cat("술·음료"), paymentMethodId = coupang, source = TxSource.SCREENSHOT),
+            Tx(amount = 52300, occurredAt = at(2, 12, 0), merchant = "쿠팡", memo = "데일리샷 와인 외 2개", categoryId = cat("술·유흥"), paymentMethodId = coupang, source = TxSource.SCREENSHOT),
             listOf(
-                TxSplit(txId = 0, name = "데일리샷 와인", amount = 29900, categoryId = cat("술·음료")),
-                TxSplit(txId = 0, name = "생수 2L", quantity = 12, amount = 12400, categoryId = cat("장보기")),
-                TxSplit(txId = 0, name = "키친타월 6롤", amount = 9000, categoryId = cat("생활용품")),
-                TxSplit(txId = 0, name = "배송비·할인", amount = 1000, categoryId = cat("술·음료")),
+                TxSplit(txId = 0, name = "데일리샷 와인", amount = 29900, categoryId = cat("술·유흥")),
+                TxSplit(txId = 0, name = "생수 2L", quantity = 12, amount = 12400, categoryId = cat("식비")),
+                TxSplit(txId = 0, name = "키친타월 6롤", amount = 9000, categoryId = cat("생활")),
+                TxSplit(txId = 0, name = "배송비·할인", amount = 1000, categoryId = cat("술·유흥")),
             ),
         )
         // earlier months for the 6-month chart
@@ -208,10 +284,10 @@ class ScreenshotTest {
         val result = """
             {"source_app":"coupang","document_type":"order_list","warnings":[],"transactions":[
              {"date":"${today.minusDays(1)}","time":null,"merchant":"쿠팡","total_amount":39900,"currency":"KRW","payment_hint":null,"status":"paid",
-              "items":[{"name":"데일리샷 와인","quantity":1,"amount":29900,"category_id":"${cat("술·음료")}"},{"name":"키친타월 6롤","quantity":1,"amount":9000,"category_id":"${cat("생활용품")}"}],
+              "items":[{"name":"데일리샷 와인","quantity":1,"amount":29900,"category_id":"${cat("술·유흥")}"},{"name":"키친타월 6롤","quantity":1,"amount":9000,"category_id":"${cat("생활")}"}],
               "shipping_fee":1000,"discount":0,"confidence":0.95},
              {"date":"${today.minusDays(2)}","time":null,"merchant":"쿠팡","total_amount":12400,"currency":"KRW","payment_hint":"쿠팡머니","status":"paid",
-              "items":[{"name":"생수 2L","quantity":12,"amount":12400,"category_id":"${cat("장보기")}"}],"shipping_fee":0,"discount":0,"confidence":0.9},
+              "items":[{"name":"생수 2L","quantity":12,"amount":12400,"category_id":"${cat("식비")}"}],"shipping_fee":0,"discount":0,"confidence":0.9},
              {"date":"${today.minusDays(5)}","time":null,"merchant":"쿠팡","total_amount":8900,"currency":"KRW","payment_hint":null,"status":"refunded",
               "items":[{"name":"휴대폰 케이스","quantity":1,"amount":8900,"category_id":"${cat("쇼핑")}"}],"shipping_fee":0,"discount":0,"confidence":0.9}
             ]}
@@ -232,7 +308,7 @@ class EntryScreenshotTest {
         compose.setContent {
             com.choimanseon.pocketlog.ui.PocketTheme(false) {
                 androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.background(androidx.compose.ui.graphics.Color.White)) {
-                    com.choimanseon.pocketlog.ui.EntryForm(com.choimanseon.pocketlog.ui.Entry(), Nav(), {}, {})
+                    com.choimanseon.pocketlog.ui.EntryForm(com.choimanseon.pocketlog.ui.Entry(), Nav(), {}, {}, {})
                 }
             }
         }

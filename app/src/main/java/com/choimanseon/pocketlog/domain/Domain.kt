@@ -1,5 +1,6 @@
 package com.choimanseon.pocketlog.domain
 
+import com.choimanseon.pocketlog.data.Budget
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
@@ -117,11 +118,27 @@ fun Long.toLocalDate(): LocalDate = Instant.ofEpochMilli(this).atZone(ZoneId.sys
 fun won(v: Long) = "%,d원".format(Locale.KOREA, v)
 fun num(v: Long) = "%,d".format(Locale.KOREA, v)
 
-/** "+3,200,000" for income, "-8,000" for expense; transfers have no sign. */
+/** "+3,200,000" for income, "-8,000" for expense; transfers and savings have no sign (a savings withdrawal does). */
 fun signedAmount(tx: Tx) = when (tx.type) {
     TxType.INCOME -> "+" + num(tx.amount)
     TxType.EXPENSE -> if (tx.amount < 0) "+" + num(-tx.amount) else "-" + num(tx.amount)
-    TxType.TRANSFER -> num(tx.amount)
+    TxType.TRANSFER, TxType.SAVING -> num(tx.amount)
+}
+
+val TxType.label get() = when (this) {
+    TxType.EXPENSE -> "지출"
+    TxType.INCOME -> "수입"
+    TxType.TRANSFER -> "이체"
+    TxType.SAVING -> "저축"
+}
+
+/** The categories a transaction of [type] can have: top rows, not the 공통 태그 group. */
+fun List<Category>.tops(type: TxType) = filter { it.type == type && it.parentId == null && !it.tagGroup }
+
+/** Tags offered with [categoryId]: its own, then the shared ones of its type. */
+fun List<Category>.tagsFor(categoryId: Long?, type: TxType): List<Category> {
+    val group = firstOrNull { it.type == type && it.tagGroup }?.id
+    return filter { !it.hidden && it.parentId != null && (it.parentId == categoryId || it.parentId == group) }.sortedBy { it.parentId != categoryId }
 }
 
 /** Compact "12.3만" for chart axes. */
@@ -208,6 +225,58 @@ fun total(txs: List<Tx>, type: TxType) = txs.filter { it.countable() && it.type 
 
 data class CategorySum(val category: Category?, val total: Long)
 
+/** What a budget has used in its own period around a day: this week, this month or this year (TODO #35). */
+data class BudgetUse(val budget: Budget, val period: Period, val spent: Long) {
+    val left get() = budget.amount - spent
+    val percent get() = if (budget.amount > 0) (spent * 100 / budget.amount).toInt() else 0
+    /** 이번 주 · 이번 달 · 올해 */
+    val label get() = when (budget.period) { PeriodUnit.WEEK -> "이번 주"; PeriodUnit.YEAR -> "올해"; else -> "이번 달" }
+    /** What can still be spent each day until the period ends, today included. */
+    fun perDay(today: LocalDate) = left / ChronoUnit.DAYS.between(today, period.end).coerceAtLeast(1)
+}
+
+/** 주 · 월 · 연 통일 (TODO #37): 1년 = 12달 = 52주, rounded to 100원. */
+fun convertBudget(amount: Long, from: PeriodUnit, to: PeriodUnit): Long {
+    if (from == to) return amount
+    fun perYear(u: PeriodUnit) = when (u) { PeriodUnit.WEEK -> 52.0; PeriodUnit.YEAR -> 1.0; else -> 12.0 }
+    return Math.round(amount * perYear(from) / perYear(to) / 100) * 100
+}
+
+/**
+ * The budgets that make [budgets] whole again when 통일 is on: per category, the one in [preferred] (else month, week, year)
+ * sets the other two periods. Only changed or new rows come back.
+ */
+fun linkedBudgets(budgets: List<Budget>, preferred: PeriodUnit): List<Budget> = budgets.groupBy { it.categoryId }.flatMap { (_, own) ->
+    val units = listOf(PeriodUnit.WEEK, PeriodUnit.MONTH, PeriodUnit.YEAR)
+    val base = (listOf(preferred) + listOf(PeriodUnit.MONTH, PeriodUnit.WEEK, PeriodUnit.YEAR)).firstNotNullOf { u -> own.firstOrNull { it.period == u } }
+    units.filter { it != base.period }.mapNotNull { u ->
+        val amount = convertBudget(base.amount, base.period, u)
+        val have = own.firstOrNull { it.period == u }
+        when {
+            have == null -> Budget(categoryId = base.categoryId, amount = amount, period = u)
+            have.amount != amount -> have.copy(amount = amount)
+            else -> null
+        }
+    }
+}
+
+/** The days to load for [budgetUses]: from the earliest to the latest day any of [budgets] covers around [date]. */
+fun budgetSpan(budgets: List<Budget>, date: LocalDate, startDay: Int, weekStart: DayOfWeek): Period {
+    val periods = budgets.map { periodOf(it.period, date, startDay, weekStart) }.ifEmpty { listOf(monthPeriod(date, startDay)) }
+    return Period(periods.minOf { it.start }, periods.maxOf { it.end })
+}
+
+/** Week budgets first, then month, then year. [txs] and [splits] must cover [budgetSpan]. */
+fun budgetUses(budgets: List<Budget>, txs: List<Tx>, splits: List<TxSplit>, categories: List<Category>, date: LocalDate, startDay: Int, weekStart: DayOfWeek) =
+    budgets.sortedWith(compareBy({ it.period.ordinal }, { it.categoryId != null })).map { b ->
+        val p = periodOf(b.period, date, startDay, weekStart)
+        val inside = txs.filter { it.occurredAt.toLocalDate() in p }
+        val ids = inside.mapTo(HashSet()) { it.id }
+        val spent = if (b.categoryId == null) total(inside, TxType.EXPENSE)
+        else byTopCategory(inside, splits.filter { it.txId in ids }, categories, TxType.EXPENSE).firstOrNull { it.category?.id == b.categoryId }?.total ?: 0
+        BudgetUse(b, p, spent)
+    }
+
 /**
  * Totals per top-level category. A Tx with splits is counted by its splits
  * (a Coupang order with groceries and a phone case lands in two categories).
@@ -230,64 +299,97 @@ fun byTopCategory(txs: List<Tx>, splits: List<TxSplit>, categories: List<Categor
 
 // ---------------------------------------------------------------- slices of a period (분석 · 내역 목록)
 
-/** Which transactions a list or a chart slice stands for. A top category also matches its subcategories, unless [exactCategory]. */
+/** Which transactions a list or a chart slice stands for. */
 data class TxFilter(
     val start: Long,
     val end: Long,
     val type: TxType? = null,
     val category: Long? = null,
-    val exactCategory: Boolean = false,
     val uncategorized: Boolean = false,
+    val tag: Long? = null,
+    val untagged: Boolean = false,
     val pay: Long? = null,
     val noPay: Boolean = false,
     val merchant: String? = null,
     val weekday: Int? = null, // DayOfWeek value
     val hours: IntRange? = null,
+    val brand: String? = null, // every branch: Categorizer.brandOf
 )
 
-fun TxFilter.matches(tx: Tx, splits: List<TxSplit>?, parentOf: Map<Long, Long?>): Boolean {
+fun TxFilter.matches(tx: Tx, splits: List<TxSplit>?, tags: List<Long>?): Boolean {
     if (!tx.countable() || tx.occurredAt < start || tx.occurredAt >= end || (type != null && tx.type != type)) return false
-    fun inCategory(id: Long?) = id != null && (id == category || (!exactCategory && parentOf[id] == category))
-    if (category != null && !inCategory(tx.categoryId) && splits.orEmpty().none { inCategory(it.categoryId) }) return false
+    if (category != null && tx.categoryId != category && splits.orEmpty().none { it.categoryId == category }) return false
     if (uncategorized && (tx.categoryId != null || splits.orEmpty().any { it.categoryId != null })) return false
+    if (tag != null && tag !in tags.orEmpty()) return false
+    if (untagged && !tags.isNullOrEmpty()) return false
     if (pay != null && tx.paymentMethodId != pay) return false
     if (noPay && tx.paymentMethodId != null) return false
     if (merchant != null && tx.merchant.trim() != merchant) return false
+    if (brand != null && com.choimanseon.pocketlog.auto.Categorizer.brandOf(tx.merchant) != brand) return false
     val at = Instant.ofEpochMilli(tx.occurredAt).atZone(ZoneId.systemDefault())
     if (weekday != null && at.dayOfWeek.value != weekday) return false
     return hours == null || at.hour in hours
 }
 
-enum class GroupBy(val label: String) { CATEGORY("카테고리별"), SUBCATEGORY("세부분류별"), PAY("결제수단별"), WEEKDAY("요일별"), HOUR("시간대별"), MERCHANT("내역별") }
+/** 지출 패턴 (TODO #35). [heat]: rows are the days of the week from the week's first day, columns 3-hour blocks from midnight. */
+class Pattern(val heat: List<List<Long>>, val weekdayPerDay: Long, val weekendPerDay: Long, val places: List<Place>)
+
+/** One brand: every branch together ("스타벅스 김포점", "스타벅스 광진점"); [name] is the branch seen most. */
+data class Place(val brand: String, val name: String, val branches: Int, val visits: Int, val total: Long)
+
+/**
+ * Repeat records (always 9:00) and screenshots without a time (saved at 12:00) would make false hot spots, so the heat map
+ * leaves them out. The daily averages count the days of [period] up to today.
+ */
+fun pattern(txs: List<Tx>, type: TxType, period: Period, today: LocalDate, weekStart: DayOfWeek): Pattern {
+    val zone = ZoneId.systemDefault()
+    val mine = txs.filter { it.countable() && it.type == type }
+    val heat = List(7) { MutableList(8) { 0L } }
+    mine.forEach { tx ->
+        val at = Instant.ofEpochMilli(tx.occurredAt).atZone(zone)
+        val noTime = tx.source == TxSource.SCREENSHOT && at.hour == 12 && at.minute == 0
+        if (tx.source == TxSource.REPEAT || noTime) return@forEach
+        heat[(at.dayOfWeek.value - weekStart.value + 7) % 7][at.hour / 3] += tx.amount
+    }
+    val days = generateSequence(period.start) { it.plusDays(1) }.takeWhile { it < period.end && !it.isAfter(today) }.toList()
+    fun weekend(d: LocalDate) = d.dayOfWeek == DayOfWeek.SATURDAY || d.dayOfWeek == DayOfWeek.SUNDAY
+    fun perDay(weekendDays: Boolean): Long {
+        val n = days.count { weekend(it) == weekendDays }
+        return if (n == 0) 0 else mine.filter { weekend(it.occurredAt.toLocalDate()) == weekendDays }.sumOf { it.amount } / n
+    }
+    val places = mine.filter { it.merchant.isNotBlank() }.groupBy { com.choimanseon.pocketlog.auto.Categorizer.brandOf(it.merchant) }.map { (brand, list) ->
+        val names = list.groupingBy { it.merchant.trim() }.eachCount()
+        Place(brand, names.maxBy { it.value }.key, names.size, list.size, list.sumOf { it.amount })
+    }.sortedWith(compareByDescending<Place> { it.visits }.thenByDescending { it.total }).take(10)
+    return Pattern(heat, perDay(false), perDay(true), places)
+}
+
+enum class GroupBy(val label: String) { CATEGORY("카테고리별"), TAG("태그별"), PAY("결제수단별"), WEEKDAY("요일별"), HOUR("시간대별"), MERCHANT("내역별") }
 
 data class GroupSum(val label: String, val total: Long, val filter: TxFilter)
 
 private val hourBuckets = listOf("새벽" to 0..5, "아침" to 6..10, "점심" to 11..13, "오후" to 14..17, "저녁" to 18..21, "밤" to 22..23)
 
-/** Totals of [base]'s transactions grouped [by]; categories count splits (one order can land in several). */
-fun groupSums(txs: List<Tx>, splits: List<TxSplit>, categories: List<Category>, pays: List<PayMethod>, base: TxFilter, by: GroupBy): List<GroupSum> {
-    val parentOf = categories.associate { it.id to it.parentId }
-    val inBase = txs.filter { base.matches(it, null, parentOf) }
+/**
+ * Totals of [base]'s transactions grouped [by]. Categories count splits (one order can land in several);
+ * tags count the whole transaction once per tag, so tag totals can add up to more than the period ([tags]: txId → tag ids).
+ */
+fun groupSums(
+    txs: List<Tx>, splits: List<TxSplit>, tags: Map<Long, List<Long>>, categories: List<Category>, pays: List<PayMethod>, base: TxFilter, by: GroupBy,
+): List<GroupSum> {
+    val inBase = txs.filter { base.matches(it, null, null) }
     fun <K> sum(key: (Tx) -> K) = inBase.groupBy(key).mapValues { (_, v) -> v.sumOf { it.amount } }
     val byId = categories.associateBy { it.id }
     val groups = when (by) {
         GroupBy.CATEGORY -> byTopCategory(inBase, splits, categories, base.type ?: TxType.EXPENSE).map { s ->
             GroupSum(s.category?.name ?: "미분류", s.total, s.category?.let { base.copy(category = it.id) } ?: base.copy(uncategorized = true))
         }
-        GroupBy.SUBCATEGORY -> {
-            val splitsByTx = splits.groupBy { it.txId }
+        GroupBy.TAG -> {
             val sums = HashMap<Long?, Long>()
-            inBase.forEach { tx ->
-                val parts = splitsByTx[tx.id]
-                if (parts.isNullOrEmpty()) sums.merge(tx.categoryId, tx.amount, Long::plus)
-                else parts.forEach { sums.merge(it.categoryId ?: tx.categoryId, it.amount, Long::plus) }
-            }
+            inBase.forEach { tx -> tags[tx.id].orEmpty().ifEmpty { listOf(null) }.forEach { sums.merge(it, tx.amount, Long::plus) } }
             sums.map { (id, v) ->
-                val c = id?.let { byId[it] }
-                GroupSum(
-                    c?.let { (it.parentId?.let { p -> byId[p]?.name + " › " } ?: "") + it.name } ?: "미분류", v,
-                    c?.let { base.copy(category = it.id, exactCategory = true) } ?: base.copy(uncategorized = true),
-                )
+                val t = id?.let { byId[it] } // the tag's name alone, no category in front (TODO #42)
+                GroupSum(t?.name ?: "태그 없음", v, t?.let { base.copy(tag = it.id) } ?: base.copy(untagged = true))
             }
         }
         GroupBy.PAY -> {

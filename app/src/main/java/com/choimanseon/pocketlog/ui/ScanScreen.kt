@@ -25,6 +25,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.choimanseon.pocketlog.Notify
 import com.choimanseon.pocketlog.ai.OrderChoice
 import com.choimanseon.pocketlog.ai.Scan
 import com.choimanseon.pocketlog.ai.ScanOrder
@@ -44,6 +46,11 @@ import kotlinx.coroutines.launch
 fun ScanScreen(jobId: Long, nav: Nav, pickScreenshots: () -> Unit) {
     val job by rememberFlow<ScanJob?>(null, jobId) { app.dao.scanJob(jobId) }
     val j = job
+    LifecycleResumeEffect(jobId) {
+        Scan.viewing = jobId
+        Notify.cancelScan(jobId)
+        onPauseOrDispose { if (Scan.viewing == jobId) Scan.viewing = null }
+    }
     PageScaffold("스크린샷 분석", onBack = nav::pop) {
         when (j?.status) {
             null, ScanStatus.RUNNING -> Analyzing(j)
@@ -77,7 +84,7 @@ private fun Analyzing(job: ScanJob?) {
         Spacer(Modifier.height(32.dp))
         CircularProgressIndicator(color = pal.brand)
         Text(messages[i], style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 16.dp))
-        Text("보통 5~20초 걸려요. 다른 화면으로 가도 계속 분석해요.", style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 4.dp))
+        Text("보통 5~20초 걸려요. 다른 화면으로 가도 계속 분석하고, 끝나면 알림으로 알려 드려요.", style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 4.dp))
         repeat(3) {
             Box(Modifier.padding(top = 16.dp).fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).background(pal.surface).alpha(pulse))
         }
@@ -141,6 +148,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
         itemsIndexed(result.orders) { i, o ->
             OrderCard(
                 o, include[i], payIds[i]?.let { payMap[it]?.name }, totals[i], itemCats[i].map { it?.let { id -> catMap[id] } },
+                o.items.mapIndexed { k, item -> Scan.tagsFor(itemCats[i][k], listOf(item), cats).mapNotNull { catMap[it]?.name } },
                 dups[i], dupChoice[i],
                 onInclude = { include[i] = it },
                 onPay = { pickPay = i },
@@ -199,6 +207,7 @@ private fun OrderCard(
     payName: String?,
     total: Long,
     itemCats: List<com.choimanseon.pocketlog.data.Category?>,
+    itemTags: List<List<String>>,
     dup: com.choimanseon.pocketlog.data.Tx?,
     dupChoice: Dup,
     onInclude: (Boolean) -> Unit,
@@ -226,7 +235,7 @@ private fun OrderCard(
         o.items.forEachIndexed { k, item ->
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(item.name + if (item.quantity > 1) " ×${item.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 2)
-                Chip(itemCats.getOrNull(k)?.name ?: "카테고리", itemCats.getOrNull(k) != null) { onItemCategory(k) }
+                Chip((itemCats.getOrNull(k)?.name ?: "카테고리") + itemTags[k].joinToString("") { " #$it" }, itemCats.getOrNull(k) != null) { onItemCategory(k) }
                 Text(num(item.amount), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp).widthIn(min = 64.dp), textAlign = TextAlign.End)
             }
         }

@@ -3,6 +3,7 @@ package com.choimanseon.pocketlog.data
 import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
@@ -40,7 +41,8 @@ interface PocketDao {
     @Query("SELECT * FROM TxSplit WHERE txId = :txId ORDER BY id")
     fun splitsOf(txId: Long): Flow<List<TxSplit>>
 
-    @Query("SELECT * FROM Tx WHERE deletedAt IS NULL ORDER BY occurredAt DESC LIMIT :limit")
+    /** Up to now: an installment's later months are already rows, dated in the months ahead. */
+    @Query("SELECT * FROM Tx WHERE deletedAt IS NULL AND occurredAt <= strftime('%s', 'now') * 1000 + 60000 ORDER BY occurredAt DESC LIMIT :limit")
     fun recentTx(limit: Int): Flow<List<Tx>>
 
     @Query("SELECT * FROM Tx WHERE deletedAt IS NULL AND status = 'PENDING_REVIEW' ORDER BY occurredAt DESC")
@@ -51,10 +53,7 @@ interface PocketDao {
         AND (:q = '' OR merchant LIKE '%' || :q || '%' OR memo LIKE '%' || :q || '%')
         AND (:min IS NULL OR ABS(amount) >= :min) AND (:max IS NULL OR ABS(amount) <= :max)
         AND (:pay IS NULL OR paymentMethodId = :pay)
-        AND (:cat IS NULL OR categoryId = :cat
-             OR categoryId IN (SELECT id FROM Category WHERE parentId = :cat)
-             OR id IN (SELECT txId FROM TxSplit WHERE categoryId = :cat
-                       OR categoryId IN (SELECT id FROM Category WHERE parentId = :cat)))
+        AND (:cat IS NULL OR categoryId = :cat OR id IN (SELECT txId FROM TxSplit WHERE categoryId = :cat))
         ORDER BY occurredAt DESC LIMIT 300"""
     )
     fun search(q: String, cat: Long?, pay: Long?, min: Long?, max: Long?): Flow<List<Tx>>
@@ -126,6 +125,28 @@ interface PocketDao {
     @Query("DELETE FROM Tx WHERE id = :id")
     suspend fun deleteTx(id: Long)
 
+    // ---- tags (TODO #27)
+    @Query("SELECT * FROM TxTag WHERE txId IN (SELECT id FROM Tx WHERE deletedAt IS NULL AND occurredAt >= :start AND occurredAt < :end)")
+    fun tagsBetween(start: Long, end: Long): Flow<List<TxTag>>
+
+    @Query("SELECT tagId FROM TxTag WHERE txId = :txId")
+    fun tagsOf(txId: Long): Flow<List<Long>>
+
+    @Query("SELECT tagId FROM TxTag WHERE txId = :txId")
+    suspend fun tagsOfOnce(txId: Long): List<Long>
+
+    @Query("DELETE FROM TxTag WHERE txId = :txId") suspend fun clearTags(txId: Long)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertTags(tags: List<TxTag>)
+
+    /** The same tags on every month of the purchase containing [id]. */
+    @Transaction
+    suspend fun setTags(id: Long, tagIds: Collection<Long>) {
+        purchaseRows(id).forEach { row ->
+            clearTags(row.id)
+            insertTags(tagIds.map { TxTag(row.id, it) })
+        }
+    }
+
     @Query("UPDATE RawMessage SET status = 'IGNORED', txId = NULL WHERE txId = :txId")
     suspend fun ignoreRawOf(txId: Long)
 
@@ -150,6 +171,8 @@ interface PocketDao {
     suspend fun mergeCategory(from: Long, to: Long) {
         moveTxCategory(from, to)
         moveSplitCategory(from, to)
+        moveTxTags(from, to)
+        deleteTagsOf(from)
         moveChildren(from, to)
         moveRuleCategory(from.toString(), to.toString())
         deleteBudgetsOf(from)
@@ -157,8 +180,19 @@ interface PocketDao {
     }
     @Query("UPDATE Tx SET categoryId = :to WHERE categoryId = :from") suspend fun moveTxCategory(from: Long, to: Long)
     @Query("UPDATE TxSplit SET categoryId = :to WHERE categoryId = :from") suspend fun moveSplitCategory(from: Long, to: Long)
+    @Query("UPDATE OR IGNORE TxTag SET tagId = :to WHERE tagId = :from") suspend fun moveTxTags(from: Long, to: Long)
+    @Query("DELETE FROM TxTag WHERE tagId = :id") suspend fun deleteTagsOf(id: Long)
     @Query("UPDATE Category SET parentId = :to WHERE parentId = :from") suspend fun moveChildren(from: Long, to: Long)
-    @Query("UPDATE `Rule` SET value = :to WHERE kind = 'CATEGORY' AND value = :from") suspend fun moveRuleCategory(from: String, to: String)
+    /** A rule's value is "categoryId" or "categoryId|tagId,tagId"; only the category part moves. */
+    @Query("UPDATE `Rule` SET value = :to || substr(value, length(:from) + 1) WHERE kind = 'CATEGORY' AND (value = :from OR value LIKE :from || '|%')")
+    suspend fun moveRuleCategory(from: String, to: String)
+
+    /** A tag goes away; its transactions keep their category. */
+    @Transaction
+    suspend fun deleteTag(id: Long) {
+        deleteTagsOf(id)
+        deleteCategory(id)
+    }
     @Query("DELETE FROM Budget WHERE categoryId = :id") suspend fun deleteBudgetsOf(id: Long)
     @Query("DELETE FROM Category WHERE id = :id") suspend fun deleteCategory(id: Long)
 
@@ -213,15 +247,27 @@ interface PocketDao {
     @Query("SELECT COUNT(*) FROM RawMessage WHERE body = :body AND receivedAt > :since")
     suspend fun countSameBody(body: String, since: Long): Int
 
+    @Query("SELECT sender FROM RawMessage WHERE id = :id")
+    suspend fun senderOf(id: Long): String?
+
     // ---- test data (설정 → 더미 데이터)
     @Query("SELECT COUNT(*) FROM Tx WHERE source = 'DUMMY'")
     fun dummyCount(): Flow<Int>
 
-    @Query("DELETE FROM Tx WHERE source = 'DUMMY'")
-    suspend fun deleteDummy()
+    @Query("DELETE FROM TxTag WHERE txId IN (SELECT id FROM Tx WHERE source = 'DUMMY')") suspend fun deleteDummyTags()
+    @Query("DELETE FROM Tx WHERE source = 'DUMMY'") suspend fun deleteDummyTx()
+    @Query("DELETE FROM Favorite WHERE dummy = 1") suspend fun deleteDummyFavorites()
+
+    @Transaction
+    suspend fun deleteDummy() {
+        deleteDummyTags()
+        deleteDummyTx()
+        deleteDummyFavorites()
+    }
 
     // ---- import (똑똑가계부): everything is replaced in one transaction
     @Query("DELETE FROM TxSplit") suspend fun deleteAllSplits()
+    @Query("DELETE FROM TxTag") suspend fun deleteAllTags()
     @Query("DELETE FROM Tx") suspend fun deleteAllTx()
     @Query("DELETE FROM Category") suspend fun deleteAllCategories()
     @Query("DELETE FROM PayMethod") suspend fun deleteAllPayMethods()
@@ -229,17 +275,20 @@ interface PocketDao {
     @Query("DELETE FROM `Rule` WHERE kind = 'CATEGORY'") suspend fun deleteCategoryRules()
     @Query("DELETE FROM `Rule` WHERE kind = 'SOURCE_DEFAULT_PAYMENT'") suspend fun deleteSourceDefaults()
     @Query("DELETE FROM RawMessage") suspend fun deleteAllRaw()
+    @Query("DELETE FROM Favorite") suspend fun deleteAllFavorites()
     @Insert suspend fun insertPayMethods(p: List<PayMethod>)
-    @Insert suspend fun insertTxs(t: List<Tx>)
+    @Insert suspend fun insertTxs(t: List<Tx>): List<Long>
     @Insert suspend fun insertRules(r: List<Rule>)
 
     /** Block rules are kept: they are the user's settings, not data. */
     @Transaction
-    suspend fun replaceAll(categories: List<Category>, pays: List<PayMethod>, txs: List<Tx>, rules: List<Rule>) {
+    suspend fun replaceAll(categories: List<Category>, pays: List<PayMethod>, txs: List<Tx>, rules: List<Rule>, tags: List<TxTag> = emptyList()) {
         deleteAllSplits()
+        deleteAllTags()
         deleteAllTx()
         deleteAllRaw()
         deleteAllBudgets()
+        deleteAllFavorites() // they point at the old categories and payment methods
         deleteCategoryRules()
         deleteSourceDefaults()
         deleteAllCategories()
@@ -247,8 +296,31 @@ interface PocketDao {
         insertCategories(categories)
         insertPayMethods(pays)
         insertTxs(txs)
+        insertTags(tags)
         insertRules(rules)
     }
+
+    // ---- 즐겨찾기 · 반복 기록
+    @Query("SELECT * FROM Favorite ORDER BY sort, createdAt")
+    fun favorites(): Flow<List<Favorite>>
+
+    @Query("SELECT MIN(sort) FROM Favorite")
+    suspend fun minFavoriteSort(): Int?
+
+    @Query("SELECT * FROM Favorite WHERE nextAt IS NOT NULL AND nextAt <= :now")
+    suspend fun dueFavorites(now: Long): List<Favorite>
+
+    @Upsert suspend fun upsert(f: Favorite): Long
+    @Delete suspend fun delete(f: Favorite)
+
+    // ---- AI 월간 리포트
+    @Query("SELECT * FROM Report ORDER BY start DESC")
+    fun reports(): Flow<List<Report>>
+
+    @Query("SELECT * FROM Report WHERE start = :start")
+    suspend fun report(start: String): Report?
+
+    @Upsert suspend fun upsert(r: Report)
 
     // ---- scans
     @Insert suspend fun insert(j: ScanJob): Long
@@ -260,6 +332,23 @@ interface PocketDao {
     @Query("SELECT * FROM ScanJob WHERE id = :id")
     suspend fun scanJobOnce(id: Long): ScanJob?
 
+    @Query(
+        "SELECT * FROM ScanJob WHERE imageCount > 0 AND ((status != 'SAVED' AND createdAt < :before) OR " +
+            "(status = 'SAVED' AND id NOT IN (SELECT scanJobId FROM Tx WHERE scanJobId IS NOT NULL AND deletedAt IS NULL)))"
+    )
+    suspend fun scansToForget(before: Long): List<ScanJob>
+
+    @Query("SELECT * FROM ScanJob WHERE status = 'SAVED' AND imageCount > 0")
+    suspend fun savedScans(): List<ScanJob>
+
     @Query("SELECT * FROM ScanJob WHERE imageHash = :hash AND status IN ('DONE', 'SAVED') ORDER BY id DESC LIMIT 1")
     suspend fun scanByHash(hash: String): ScanJob?
+
+    /** Scans not saved yet: still running, failed, or done and waiting for the user (홈 카드, TODO #20). */
+    @Query("SELECT * FROM ScanJob WHERE status IN ('RUNNING', 'DONE', 'FAILED') AND createdAt > :since ORDER BY id DESC")
+    fun openScans(since: Long): Flow<List<ScanJob>>
+
+    /** A scan still RUNNING from before this process started was cut off (app killed). */
+    @Query("UPDATE ScanJob SET status = 'FAILED', error = :error WHERE status = 'RUNNING' AND createdAt < :before")
+    suspend fun failStaleScans(before: Long, error: String)
 }

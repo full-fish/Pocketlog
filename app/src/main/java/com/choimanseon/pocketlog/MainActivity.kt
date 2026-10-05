@@ -66,10 +66,17 @@ class MainActivity : FragmentActivity() {
         super.onStart()
         // lock again after a minute in the background (기획서 §4.10)
         if (Pin.isSet && stoppedAt > 0 && SystemClock.elapsedRealtime() - stoppedAt > 60_000) locked = true
+        AutoInputService.catchUp() // a payment notification missed while the app sat frozen in the background (TODO #48)
     }
 
     private fun handle(intent: Intent) {
         intent.getLongExtra(Notify.EXTRA_TX, -1).takeIf { it > 0 }?.let { nav.push(Screen.Detail(it)) }
+        intent.getLongExtra(Notify.EXTRA_SCAN, -1).takeIf { it > 0 }?.let { nav.push(Screen.ScanResult(it)) }
+        intent.getStringExtra(Notify.EXTRA_REPORT)?.let { nav.push(Screen.Reports(it)) }
+        when (val action = intent.getStringExtra(com.choimanseon.pocketlog.ui.PocketWidget.ACTION)) {
+            "entry" -> nav.entry = com.choimanseon.pocketlog.ui.Entry()
+            "camera", "photos" -> nav.launch = action
+        }
         val uris: List<Uri> = when (intent.action) {
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
             Intent.ACTION_SEND_MULTIPLE -> IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()

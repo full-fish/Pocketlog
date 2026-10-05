@@ -49,6 +49,8 @@ sealed interface Screen {
     data object Security : Screen
     data object Data : Screen
     data object BudgetEdit : Screen
+    data object Favorites : Screen
+    data class Reports(val start: String? = null) : Screen
     data object Review : Screen
     data object Search : Screen
     data class Detail(val id: Long) : Screen
@@ -56,8 +58,11 @@ sealed interface Screen {
     data class TxList(val title: String, val filter: TxFilter) : Screen
 }
 
-/** Opens the entry sheet: new, edit (editId), or prefilled from a failed message. */
-data class Entry(val editId: Long? = null, val type: TxType = TxType.EXPENSE, val prefill: Tx? = null)
+/**
+ * Opens the entry sheet: new, edit (editId), or prefilled from a failed message.
+ * With [favorite] the same sheet adds or edits a 즐겨찾기 instead of a transaction (TODO #38).
+ */
+data class Entry(val editId: Long? = null, val type: TxType = TxType.EXPENSE, val prefill: Tx? = null, val favorite: com.choimanseon.pocketlog.data.Favorite? = null)
 
 /** ponytail: hand-rolled back stack; Navigation Compose when deep links or saved stacks matter. */
 class Nav {
@@ -65,6 +70,7 @@ class Nav {
     var tab by mutableIntStateOf(0)
     var entry by mutableStateOf<Entry?>(null)
     var askScanConsent by mutableStateOf<List<Uri>?>(null)
+    var launch by mutableStateOf<String?>(null) // "camera" | "photos" from the widget, run once Root is up
     val snackbar = SnackbarHostState()
     private val ui = MainScope()
 
@@ -98,12 +104,23 @@ class Nav {
 fun Root(nav: Nav) {
     app.prefs.version.collectAsState().value // recompose when onboarding finishes
     if (!app.prefs.onboarded) {
-        OnboardingScreen { next -> next?.let(nav::push) }
+        OnboardingScreen()
         return
     }
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(8)) { nav.scan(context, it) }
     val pickScreenshots = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+    // 촬영: the camera app writes into our cache through a FileProvider; Scan.start copies it right away
+    val photoUri = remember {
+        val file = java.io.File(context.cacheDir, "camera/photo.jpg").apply { parentFile?.mkdirs() }
+        androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) nav.scan(context, listOf(photoUri)) }
+    val takePhoto = { runCatching { camera.launch(photoUri) }.onFailure { nav.toast("카메라 앱을 열 수 없어요") }; Unit }
+    LaunchedEffect(nav.launch) {
+        when (nav.launch) { "camera" -> takePhoto(); "photos" -> pickScreenshots() }
+        nav.launch = null
+    }
 
     Box(Modifier.fillMaxSize().background(pal.bg)) {
         Column(Modifier.fillMaxSize()) {
@@ -132,7 +149,7 @@ fun Root(nav: Nav) {
     }
     BackHandler(enabled = nav.stack.isNotEmpty()) { nav.pop() }
 
-    nav.entry?.let { EntrySheet(it, nav, onScan = { nav.entry = null; pickScreenshots() }, onDismiss = { nav.entry = null }) }
+    nav.entry?.let { EntrySheet(it, nav, onCamera = { nav.entry = null; takePhoto() }, onPhotos = { nav.entry = null; pickScreenshots() }, onDismiss = { nav.entry = null }) }
 
     nav.askScanConsent?.let { uris ->
         ConfirmDialog(
@@ -160,6 +177,8 @@ private fun ScreenContent(screen: Screen, nav: Nav, pickScreenshots: () -> Unit)
         Screen.Security -> SecurityScreen(nav)
         Screen.Data -> DataScreen(nav)
         Screen.BudgetEdit -> BudgetEditScreen(nav)
+        Screen.Favorites -> FavoritesScreen(nav)
+        is Screen.Reports -> ReportScreen(screen.start, nav)
         Screen.Review -> ReviewScreen(nav)
         Screen.Search -> SearchScreen(nav)
         is Screen.Detail -> DetailScreen(screen.id, nav)

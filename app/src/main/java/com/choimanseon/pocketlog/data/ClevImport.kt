@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.CardParser
+import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.auto.normalize
 import java.io.File
 import java.time.LocalDate
@@ -18,6 +19,7 @@ import java.time.ZoneId
  * Imports a 똑똑가계부 (Cleveni) backup: the .db file it writes is a plain SQLite database.
  * Replaces everything in Pocketlog, keeping the old app's own categories and payment methods,
  * and turns the old history into merchant → category rules so auto-categorizing keeps the user's habits.
+ * Its subcategories become tags (TODO #27) and its 저축 category becomes savings (TODO #28).
  */
 object ClevImport {
     data class Summary(
@@ -73,17 +75,18 @@ object ClevImport {
 
     suspend fun run(file: File): Summary {
         val data = read(file) { db -> convert(db) }
-        app.dao.replaceAll(data.categories, data.pays, data.txs, data.rules)
+        app.dao.replaceAll(data.categories, data.pays, data.txs, data.rules, data.tags)
         if (data.pays.none { it.name == "현금" }) app.dao.upsert(PayMethod(kind = PayKind.CASH, name = "현금", sort = 99_999))
         return peek(file).copy(rules = data.rules.size)
     }
 
-    private class Converted(val categories: List<Category>, val pays: List<PayMethod>, val txs: List<Tx>, val rules: List<Rule>)
+    private class Converted(val categories: List<Category>, val pays: List<PayMethod>, val txs: List<Tx>, val rules: List<Rule>, val tags: List<TxTag>)
 
     private fun convert(db: SQLiteDatabase): Converted {
         val categories = categories(db.rows("SELECT * FROM catelist"), "c_", TxType.EXPENSE, 0) +
             categories(db.rows("SELECT * FROM ecatelist"), "ec_", TxType.INCOME, INCOME_ID_OFFSET)
-        val catIds = categories.map { it.id }.toSet()
+        val catById = categories.associateBy { it.id }
+        val tags = mutableListOf<TxTag>()
         val pays = db.rows("SELECT * FROM cardlist").map { r ->
             val (kind, issuer) = payKind(r.getValue("d_name"), r.getValue("d_aicode"))
             PayMethod(id = r.getValue("_id").toLong(), kind = kind, name = r.getValue("d_name"), issuer = issuer, sort = r.getValue("d_sort").toIntOrNull() ?: 0)
@@ -118,14 +121,20 @@ object ClevImport {
                     else -> ""
                 }
             }
+            // a subcategory is now a tag of its category
+            val leaf = sub?.takeIf { it in catById } ?: top?.takeIf { it in catById }
+            val parent = leaf?.let { catById.getValue(it).parentId }
+            val id = r.getValue("_id").toLong() + if (type == TxType.INCOME) incomeIdOffset else 0
+            if (parent != null) tags += TxTag(id, leaf)
+            val category = parent ?: leaf
             return Tx(
-                id = r.getValue("_id").toLong() + if (type == TxType.INCOME) incomeIdOffset else 0,
-                type = type,
+                id = id,
+                type = if (category?.let { catById.getValue(it).type } == TxType.SAVING) TxType.SAVING else type,
                 amount = r.getValue("${p}price").toLongOrNull() ?: 0,
                 occurredAt = at.first,
                 merchant = r.getValue("${p}where").trim(),
                 memo = memo,
-                categoryId = sub?.takeIf { it in catIds } ?: top?.takeIf { it in catIds },
+                categoryId = category,
                 paymentMethodId = r.getValue("${p}card").toLongOrNull()?.takeIf { it in payIds },
                 installmentMonths = installment,
                 installmentOf = purchase?.getValue("_id")?.toLong(),
@@ -134,7 +143,7 @@ object ClevImport {
         }
         val txs = spending.map { tx(it, "s_", TxType.EXPENSE, 0) } +
             db.rows("SELECT * FROM earninglist ORDER BY e_date, e_time").map { tx(it, "e_", TxType.INCOME, INCOME_ID_OFFSET) }
-        return Converted(categories, pays, txs, rulesFrom(txs))
+        return Converted(categories, pays, txs, rulesFrom(txs, tags, categories), tags)
     }
 
     /**
@@ -155,13 +164,14 @@ object ClevImport {
         val tops = rows.filter { it.getValue("${p}super") == "0" }.sortedBy { it.getValue("${p}sort") }
         val colorOf = tops.mapIndexed { i, r -> r.getValue("_id") to CategoryColors[(i + if (type == TxType.INCOME) 1 else 0) % CategoryColors.size] }.toMap()
         val byId = rows.associateBy { it.getValue("_id") }
+        val savingTops = tops.filter { type == TxType.EXPENSE && it.getValue("${p}name") in setOf("저축", "저축·투자") }.map { it.getValue("_id") }
         return rows.map { r ->
             val parent = r.getValue("${p}super").takeIf { it != "0" }
             val name = r.getValue("${p}name")
             val parentName = parent?.let { byId[it]?.get("${p}name") }
             Category(
                 id = r.getValue("_id").toLong() + offset,
-                type = type,
+                type = if ((parent ?: r.getValue("_id")) in savingTops) TxType.SAVING else type,
                 name = name,
                 icon = icons[name] ?: parentName?.let { icons[it] } ?: "box",
                 color = colorOf[parent ?: r.getValue("_id")] ?: CategoryColors.last(),
@@ -190,20 +200,25 @@ object ClevImport {
     }
 
     /**
-     * The old history as rules: a merchant seen at least twice, mostly in one category.
+     * The old history as rules: a merchant seen at least twice, mostly with one category and tag.
      * Short names ("술", "옷") are skipped because rules match by "contains".
      */
-    private fun rulesFrom(txs: List<Tx>): List<Rule> =
-        txs.filter { it.categoryId != null && it.merchant.isNotBlank() }
+    internal fun rulesFrom(txs: List<Tx>, tags: List<TxTag>, categories: List<Category>): List<Rule> {
+        // only the category's own tags: a 공통 태그 (여행, 데이트 …) was about that one time, not the merchant
+        val parent = categories.associate { it.id to it.parentId }
+        val tagsOf = tags.groupBy({ it.txId }, { it.tagId })
+        return txs.filter { it.categoryId != null && it.merchant.isNotBlank() }
             .groupBy { normalize(it.merchant) }
             .filterKeys { it.length >= 3 }
             .mapNotNull { (merchant, list) ->
                 if (list.size < 2) return@mapNotNull null
-                val (cat, n) = list.groupingBy { it.categoryId!! }.eachCount().maxBy { it.value }
-                if (n * 10 < list.size * 6) null else Triple(merchant, cat, list.size)
+                val (pick, n) = list.groupingBy { tx -> Pick(tx.categoryId!!, tagsOf[tx.id].orEmpty().filter { parent[it] == tx.categoryId }.sorted()) }
+                    .eachCount().maxBy { it.value }
+                if (n * 10 < list.size * 6) null else Triple(merchant, pick, list.size)
             }
             .sortedBy { it.third } // most frequent last = highest id = listed first (rules are read newest first)
-            .map { (merchant, cat, _) -> Rule(kind = RuleKind.CATEGORY, pattern = merchant, value = cat.toString()) }
+            .map { (merchant, pick, _) -> Rule(kind = RuleKind.CATEGORY, pattern = merchant, value = pick.encode()) }
+    }
 
     // 똑똑가계부 default category names (plus a few common custom ones)
     private val icons = mapOf(

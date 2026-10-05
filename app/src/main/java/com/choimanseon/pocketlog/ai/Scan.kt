@@ -7,8 +7,10 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import com.choimanseon.pocketlog.Notify
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.Categorizer
+import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.auto.paid
 import com.choimanseon.pocketlog.auto.similar
 import com.choimanseon.pocketlog.data.PayMethod
@@ -31,7 +33,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 
-data class ScanItem(val name: String, val quantity: Int, val amount: Long, val categoryId: Long?)
+data class ScanItem(val name: String, val quantity: Int, val amount: Long, val categoryId: Long?, val tags: List<Long> = emptyList())
 
 data class ScanOrder(
     val date: LocalDate?,
@@ -69,9 +71,15 @@ val sourceNames = mapOf(
 )
 
 object Scan {
-    private const val MAX_EDGE = 2576 // longest edge the model reads at full resolution
+    // longest edge the model reads at full resolution. Measured 2026-10-05 (TODO.md #32): 1600px saves 0.2원 a shot on Luna and
+    // no time, 768px misreads small text, so screenshots go at full size
+    private const val MAX_EDGE = 2576
     private const val MAX_TILES = 8
+    private const val KEPT_EDGE = 960 // after saving, a screenshot is only a thumbnail on the detail screen
     private val zone get() = ZoneId.systemDefault()
+
+    /** The job whose ScanScreen is on screen right now: no notification for it. */
+    @Volatile var viewing: Long? = null
 
     private fun dir() = File(app.filesDir, "scans").apply { mkdirs() }
     fun imageFiles(job: ScanJob) = (0 until job.imageCount).map { File(dir(), "${job.id}_$it.jpg") }
@@ -96,12 +104,18 @@ object Scan {
             if (!Ai.configured) throw AiError(0, "AI 서버가 아직 설정되지 않았어요 (server/README.md)")
             Ai.scan(imageFiles(job).map { it.readBytes() }, dao.categoriesOnce(), dao.rulesOnce(RuleKind.CATEGORY))
         }
-        dao.update(
-            result.fold(
-                onSuccess = { job.copy(status = ScanStatus.DONE, resultJson = (it.optJSONObject("result") ?: it).toString()) },
-                onFailure = { job.copy(status = ScanStatus.FAILED, error = friendly(it)) },
-            )
+        val done = result.fold(
+            onSuccess = { job.copy(status = ScanStatus.DONE, resultJson = (it.optJSONObject("result") ?: it).toString()) },
+            onFailure = { job.copy(status = ScanStatus.FAILED, error = friendly(it)) },
         )
+        dao.update(done)
+        if (viewing == id) return
+        val found = done.resultJson?.let { runCatching { parse(it).orders.size }.getOrNull() } ?: 0
+        when {
+            done.status == ScanStatus.FAILED -> Notify.scan(id, "스크린샷 분석에 실패했어요", done.error ?: "눌러서 다시 시도해 주세요")
+            found > 0 -> Notify.scan(id, "스크린샷 분석이 끝났어요", "결제 ${found}건을 찾았어요. 눌러서 확인하고 저장해 주세요")
+            else -> Notify.scan(id, "스크린샷 분석이 끝났어요", "결제 내역을 찾지 못했어요")
+        }
     }
 
     private fun friendly(e: Throwable): String = when {
@@ -115,6 +129,7 @@ object Scan {
 
     /** Long screenshots become 1:2 tiles with 10% overlap; shrinking the whole image would make the text unreadable. */
     private fun tiles(context: Context, uri: Uri): List<ByteArray> {
+        turned(context, uri)?.let { return listOf(it) }
         val decoder = context.contentResolver.openInputStream(uri)?.use {
             if (Build.VERSION.SDK_INT >= 31) BitmapRegionDecoder.newInstance(it)
             else @Suppress("DEPRECATION") BitmapRegionDecoder.newInstance(it, false)
@@ -143,6 +158,39 @@ object Scan {
         }
     }
 
+    /** A camera photo stored sideways with an EXIF rotation (a receipt): turned upright as one image, or null for anything else. */
+    private fun turned(context: Context, uri: Uri): ByteArray? {
+        val degrees = context.contentResolver.openInputStream(uri)?.use {
+            when (android.media.ExifInterface(it).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+                android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> null
+            }
+        } ?: return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_EDGE) sample *= 2
+        val bmp = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: return null
+        val scale = minOf(1f, MAX_EDGE.toFloat() / maxOf(bmp.width, bmp.height))
+        val upright = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, android.graphics.Matrix().apply { postScale(scale, scale); postRotate(degrees) }, true)
+        return ByteArrayOutputStream().use { s -> upright.compress(Bitmap.CompressFormat.JPEG, 85, s); s.toByteArray() }
+    }
+
+    /**
+     * Runs at app start. Images go when nothing needs them: an analysis never saved after 30 days, or a saved one whose
+     * transactions were all deleted. Saved ones from before shrinking existed are shrunk now. The hash stays, so a repeat is still spotted.
+     */
+    suspend fun tidy(now: Long = System.currentTimeMillis()) {
+        val dao = app.dao
+        dao.scansToForget(now - 30 * 86_400_000L).forEach { job ->
+            imageFiles(job).forEach { it.delete() }
+            dao.update(job.copy(imageCount = 0))
+        }
+        dao.savedScans().forEach(::shrink)
+    }
+
     fun parse(json: String): ScanResult {
         val o = JSONObject(json)
         val orders = o.optJSONArray("transactions")
@@ -162,7 +210,11 @@ object Scan {
                     status = t.optString("status", "paid"),
                     items = List(items?.length() ?: 0) { j ->
                         val it = items!!.getJSONObject(j)
-                        ScanItem(it.optString("name"), it.optInt("quantity", 1), it.optLong("amount"), it.optNullString("category_id")?.toLongOrNull())
+                        val tags = it.optJSONArray("tag_ids")
+                        ScanItem(
+                            it.optString("name"), it.optInt("quantity", 1), it.optLong("amount"), it.optNullString("category_id")?.toLongOrNull(),
+                            List(tags?.length() ?: 0) { k -> tags!!.optString(k).toLongOrNull() }.filterNotNull(),
+                        )
                     },
                     shippingFee = t.optLong("shipping_fee"),
                     discount = t.optLong("discount"),
@@ -198,8 +250,13 @@ object Scan {
         return items + TxSplit(txId = 0, name = if (order.shippingFee > 0 || order.discount > 0) "배송비·할인" else "기타", amount = diff, categoryId = main)
     }
 
+    /** The AI's tags of [items] that belong to [category]; an item moved to another category on the review screen loses its old ones. */
+    fun tagsFor(category: Long?, items: List<ScanItem>, categories: List<com.choimanseon.pocketlog.data.Category>) =
+        items.flatMap { it.tags }.filter { t -> category != null && categories.any { it.id == t && it.parentId == category } }.distinct()
+
     suspend fun save(job: ScanJob, result: ScanResult, choices: List<OrderChoice>, separateItems: Boolean) {
         val dao = app.dao
+        val cats = dao.categoriesOnce()
         val sourceName = sourceNames[result.sourceApp] ?: "스크린샷"
         result.orders.zip(choices).forEach { (order, c) ->
             if (!c.include) return@forEach
@@ -216,26 +273,44 @@ object Scan {
                     if (splits.size > 1 && !plan) dao.insertSplits(splits.map { it.copy(txId = c.mergeInto.id) })
                     dao.update(c.mergeInto.copy(scanJobId = job.id, memo = c.mergeInto.memo.ifBlank { memo }, updatedAt = System.currentTimeMillis()))
                     if (c.mergeInto.categoryId == null) dao.setCategory(c.mergeInto.id, mainCat)
+                    if (dao.tagsOfOnce(c.mergeInto.id).isEmpty()) dao.setTags(c.mergeInto.id, tagsFor(c.mergeInto.categoryId ?: mainCat, order.items, cats))
                 }
-                separateItems && splits.size > 1 -> splits.forEach { s ->
-                    dao.insert(Tx(amount = s.amount, occurredAt = at, merchant = merchant, memo = s.name, categoryId = s.categoryId,
+                separateItems && splits.size > 1 -> splits.forEachIndexed { k, s ->
+                    val id = dao.insert(Tx(amount = s.amount, occurredAt = at, merchant = merchant, memo = s.name, categoryId = s.categoryId,
                         paymentMethodId = c.payId, source = TxSource.SCREENSHOT, scanJobId = job.id))
+                    dao.setTags(id, tagsFor(s.categoryId, listOfNotNull(order.items.getOrNull(k)), cats))
                 }
-                else -> dao.insertWithSplits(
-                    Tx(amount = c.total, occurredAt = at, merchant = merchant, memo = memo, categoryId = mainCat,
-                        paymentMethodId = c.payId, source = TxSource.SCREENSHOT, scanJobId = job.id),
-                    if (splits.size > 1) splits else emptyList(),
-                )
+                else -> {
+                    val id = dao.insertWithSplits(
+                        Tx(amount = c.total, occurredAt = at, merchant = merchant, memo = memo, categoryId = mainCat,
+                            paymentMethodId = c.payId, source = TxSource.SCREENSHOT, scanJobId = job.id),
+                        if (splits.size > 1) splits else emptyList(),
+                    )
+                    dao.setTags(id, tagsFor(mainCat, order.items, cats))
+                }
             }
             // learn: corrected item categories become hints for the next scan, the chosen payment becomes the app's default
             order.items.forEachIndexed { i, item ->
                 val chosen = c.categories.getOrNull(i)
-                if (chosen != null && chosen != item.categoryId) Categorizer.learn(item.name.split(' ').take(2).joinToString(" "), chosen)
+                if (chosen != null && chosen != item.categoryId) Categorizer.learn(item.name.split(' ').take(2).joinToString(" "), Pick(chosen))
             }
             if (order.paymentHint == null && c.payId != null && result.sourceApp in sourceNames && result.sourceApp !in setOf("bank", "card", "receipt")) {
                 dao.putRule(RuleKind.SOURCE_DEFAULT_PAYMENT, result.sourceApp, c.payId.toString())
             }
         }
         dao.update(job.copy(status = ScanStatus.SAVED))
+        shrink(job)
+    }
+
+    /** Saved screenshots are kept for the detail screen at about a tenth of the size; the hash in [ScanJob] still spots a repeat. */
+    private fun shrink(job: ScanJob) = imageFiles(job).forEach { f ->
+        if (f.length() < 200_000) return@forEach // already small
+        runCatching {
+            val bmp = BitmapFactory.decodeFile(f.path) ?: return@runCatching
+            val scale = KEPT_EDGE.toFloat() / maxOf(bmp.width, bmp.height)
+            if (scale >= 1f) return@runCatching
+            val small = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+            f.outputStream().use { small.compress(Bitmap.CompressFormat.JPEG, 75, it) }
+        }
     }
 }

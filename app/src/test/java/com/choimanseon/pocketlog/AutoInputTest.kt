@@ -1,6 +1,8 @@
 package com.choimanseon.pocketlog
 
 import com.choimanseon.pocketlog.auto.AutoInput
+import com.choimanseon.pocketlog.auto.Categorizer
+import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.data.PayKind
 import com.choimanseon.pocketlog.data.Rule
 import com.choimanseon.pocketlog.data.RuleKind
@@ -51,8 +53,35 @@ class AutoInputTest {
         assertEquals("스타벅스코리아", tx.merchant)
         val pay = runBlocking { dao.payMethodsOnce() }.first { it.id == tx.paymentMethodId }
         assertEquals("삼성카드(1234)", pay.name)
-        val cat = runBlocking { dao.categoriesOnce() }.first { it.id == tx.categoryId }
-        assertEquals("카페", cat.name)
+        val cats = runBlocking { dao.categoriesOnce() }.associateBy { it.id }
+        assertEquals("카페·간식", cats.getValue(tx.categoryId!!).name)
+        assertEquals(listOf("커피"), runBlocking { dao.tagsOfOnce(tx.id) }.map { cats.getValue(it).name }) // the dictionary tags it too
+    }
+
+    @Test
+    fun transferToSavingsIsSaving() {
+        app.prefs.myName = "홍길동"
+        receive("출금 300,000원 홍길동 적금 잔액 1,000,000원", title = "카카오뱅크", pkg = "com.kakaobank.channel")
+        // the savings account's own notice of the same money is the other half, not a second entry
+        receive("입금 300,000원 홍길동 적금 잔액 2,300,000원", title = "카카오뱅크", pkg = "com.kakaobank.channel", at = post + 20_000)
+        val tx = txs().single()
+        assertEquals(TxType.SAVING to 300_000L, tx.type to tx.amount)
+        val cats = runBlocking { dao.categoriesOnce() }.associateBy { it.id }
+        assertEquals("저축", cats.getValue(tx.categoryId!!).name)
+        assertEquals(listOf("적금"), runBlocking { dao.tagsOfOnce(tx.id) }.map { cats.getValue(it).name })
+    }
+
+    /** TODO #35: a foreign-only payment is recorded in won at the day's rate (cached here, so no network), and its cancel finds it. */
+    @Test
+    fun foreignOnlyPaymentIsConvertedAndCancelable() {
+        app.prefs.fxRates = "${java.time.LocalDate.now()}|{\"USD\":1.0,\"KRW\":1350.0}"
+        receive("[Web발신]\n신한카드(1234)해외승인 홍*동 USD 12.99 $mmdd NETFLIX.COM")
+        val tx = txs().single()
+        assertEquals(17_537L to TxStatus.CONFIRMED, tx.amount to tx.status) // 12.99 × 1,350
+        assertEquals("USD 12.99", tx.originalAmount)
+        app.prefs.fxRates = "${java.time.LocalDate.now()}|{\"USD\":1.0,\"KRW\":1360.0}" // the cancel comes at another rate
+        receive("[Web발신]\n신한카드(1234)해외승인취소 홍*동 USD 12.99 $mmdd NETFLIX.COM", at = post + 60_000)
+        assertEquals(TxStatus.CANCELED, txs().single().status)
     }
 
     @Test
@@ -60,6 +89,17 @@ class AutoInputTest {
         receive("[Web발신]\n삼성1234승인 홍*동\n12,300원 일시불\n$mmdd 주식회사앨리스프랜즈")
         receive("12,300원 일시불 승인\n주식회사앨리스프랜즈", title = "삼성카드", pkg = "kr.co.samsungcard.mpocket", at = post + 30_000)
         assertEquals(1, txs().size)
+    }
+
+    /** TODO #48: 인형뽑기방 1,000원 at 13:57 and again at 13:59 were merged into one. */
+    @Test
+    fun twoPaymentsAtOneShopMinutesApartAreBothRecorded() {
+        val later = LocalDateTime.now().plusMinutes(2).let { "%02d/%02d %02d:%02d".format(it.monthValue, it.dayOfMonth, it.hour, it.minute) }
+        receive("[Web발신] KB국민체크1234\n승인\n1,000원\n인형뽑기방\n고객명 홍*동님\n승인시각 $mmdd", title = "KB국민카드")
+        receive("[Web발신] KB국민체크1234\n승인\n1,000원\n인형뽑기방\n고객명 홍*동님\n승인시각 $later", title = "KB국민카드", at = post + 120_000)
+        assertEquals(2, txs().size)
+        receive("[Web발신] KB국민체크1234\n승인\n1,000원\n인형뽑기방\n고객명 홍*동님\n승인시각 $later", title = "KB국민카드", at = post + 120_000)
+        assertEquals(2, txs().size) // the very same text again (re-posted, or read again by catchUp) is skipped
     }
 
     @Test
@@ -162,6 +202,28 @@ class AutoInputTest {
         receive("삼성 갤럭시 150,000원 결제함", title = "엄마")
         assertTrue(txs().isEmpty())
         assertEquals(0, runBlocking { dao.countSameBody("삼성 갤럭시 150,000원 결제함", 0) })
+    }
+
+    @Test
+    fun rulesLearnBrandsAndTheLongestWins() = runBlocking {
+        val cats = dao.categoriesOnce()
+        fun id(name: String) = cats.first { it.name == name && it.parentId == null }.id
+        fun tag(name: String) = cats.first { it.name == name && it.parentId != null }.id
+        fun rules() = runBlocking { dao.rulesOnce(RuleKind.CATEGORY) }
+        Categorizer.learn("스타벅스 김포점", Pick(id("카페·간식"), listOf(tag("커피"))))
+        assertEquals(listOf("스타벅스"), rules().map { it.pattern })
+        assertEquals(Pick(id("카페·간식"), listOf(tag("커피"))), Categorizer.fromRules("스타벅스 광진점", rules()))
+        Categorizer.learn("스타벅스 광진점", Pick(id("카페·간식"), listOf(tag("커피")))) // already covered: nothing new
+        assertEquals(1, rules().size)
+        Categorizer.learn("스타벅스 강남R점", Pick(id("식비"))) // disagrees with the brand: only this branch
+        assertEquals(id("식비"), Categorizer.fromRules("스타벅스 강남R점", rules())?.category)
+        assertEquals("스타벅스", Categorizer.brandOf("스타벅스(김포점)"))
+        assertEquals(id("카페·간식"), Categorizer.fromRules("스타벅스 광진점", rules())?.category)
+
+        dao.putRule(RuleKind.CATEGORY, "쿠팡이츠", Pick(id("식비"), listOf(tag("야식"))).encode())
+        dao.putRule(RuleKind.CATEGORY, "쿠팡", Pick(id("쇼핑")).encode()) // newer but shorter
+        assertEquals(Pick(id("식비"), listOf(tag("야식"))), Categorizer.fromRules("쿠팡이츠 결제", rules()))
+        assertEquals("롯데백화점", Categorizer.brandOf("롯데 백화점")) // "롯데" alone would match too much
     }
 
     @Test

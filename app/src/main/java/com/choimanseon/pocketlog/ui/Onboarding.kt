@@ -14,9 +14,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CreditCard
-import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PersonOutline
 import androidx.compose.material.icons.rounded.PhotoCamera
@@ -35,9 +35,9 @@ import com.choimanseon.pocketlog.auto.AutoInputService
 
 private const val STEPS = 6
 
-/** First run (기획서 S01): what the app does, then the settings auto-recording needs. [onDone] may open a screen next. */
+/** First run (기획서 S01): what the app does, then the settings auto-recording needs. */
 @Composable
-fun OnboardingScreen(onDone: (Screen?) -> Unit) {
+fun OnboardingScreen() {
     val context = LocalContext.current
     val p = app.prefs
     var step by rememberSaveable { mutableIntStateOf(0) }
@@ -45,8 +45,10 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
     var startDay by rememberSaveable { mutableIntStateOf(p.monthStartDay) }
     var pickDay by remember { mutableStateOf(false) }
     var listenerOn by remember { mutableStateOf(AutoInputService.granted(context)) }
+    var unrestricted by remember { mutableStateOf(AutoInputService.unrestricted(context)) }
     LifecycleResumeEffect(Unit) {
         listenerOn = AutoInputService.granted(context)
+        unrestricted = AutoInputService.unrestricted(context)
         onPauseOrDispose { }
     }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -54,11 +56,10 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
     }
     BackHandler(step > 0) { step-- }
 
-    fun finish(next: Screen? = null) {
+    fun finish() {
         p.myName = name.trim()
         p.monthStartDay = startDay
-        p.onboarded = true
-        onDone(next)
+        p.onboarded = true // Root recomposes on settings change
     }
 
     Column(Modifier.fillMaxSize().background(pal.bg).statusBarsPadding().navigationBarsPadding().imePadding().padding(24.dp)) {
@@ -67,7 +68,7 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
                 when (s) {
                     0 -> Page(Icons.Rounded.CreditCard, "카드 문자가 오면\n알아서 적어요", "카드·은행·페이 알림과 문자를 읽어 바로 기록해요. 같은 결제가 두 번 와도 한 번만 적고, 취소되면 지워요.")
-                    1 -> Page(Icons.Rounded.PhotoCamera, "문자가 안 오는 결제는\n스크린샷 한 장으로", "쿠팡머니처럼 알림이 없는 결제는 주문내역 스크린샷을 공유하면 AI가 품목까지 나눠 적어요.")
+                    1 -> Page(Icons.Rounded.PhotoCamera, "문자가 안 오는 결제는\n스크린샷 한 장으로", "쇼핑·배달·페이 앱 어디든 주문내역 스크린샷이나 영수증 사진을 보내면 AI가 품목까지 나눠 적어요.")
                     2 -> Page(Icons.Rounded.PersonOutline, "나에게 들어오고\n나가는 돈만", "내 계좌끼리 옮긴 돈, 카드값, 페이머니 충전은 수입·지출이 아니라 적지 않아요. 할부는 매달 나눠 적어요.")
                     3 -> {
                         Page(Icons.Rounded.NotificationsActive, "카드 문자 자동 기록 켜기", "알림 접근을 허용하면 결제 알림만 골라 읽어요. 결제가 아닌 메시지는 저장하지 않아요.")
@@ -88,6 +89,15 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
                         }
                     }
                     4 -> {
+                        Page(Icons.Rounded.BatteryChargingFull, "결제 알림을 놓치지 않게", "휴대폰은 배터리를 아끼려고 한동안 안 쓴 앱을 잠재워요. 그때 온 카드 문자는 놓칠 수 있어서, 배터리 사용을 '제한 없음'으로 두는 게 좋아요. 알림이 올 때만 잠깐 깨어나서 배터리는 거의 쓰지 않아요.")
+                        Spacer(Modifier.height(24.dp))
+                        if (unrestricted) Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.CheckCircle, null, Modifier.padding(end = 6.dp).size(20.dp), tint = pal.income)
+                            Text("제한 없음이에요", style = MaterialTheme.typography.titleSmall, color = pal.income)
+                        }
+                        else PrimaryButton("배터리 제한 없음으로 하기", { AutoInputService.askUnrestricted(context) })
+                    }
+                    else -> {
                         Page(Icons.Rounded.AccountBalance, "내 이름과 한 달 시작일", "은행 알림에 내 이름이 받는 사람·보낸 사람으로 나오면 내 계좌끼리 옮긴 돈이라 적지 않아요.")
                         Spacer(Modifier.height(20.dp))
                         OutlinedTextField(
@@ -103,7 +113,6 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
                             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 16.dp),
                         )
                     }
-                    else -> Page(Icons.Rounded.Inventory2, "예전 가계부가 있나요?", "똑똑가계부 백업 파일(.db)이 있으면 내역·카테고리·결제수단을 그대로 옮겨요. 나중에 설정 → 백업 · 복구에서 해도 돼요.")
                 }
             }
         }
@@ -113,10 +122,7 @@ fun OnboardingScreen(onDone: (Screen?) -> Unit) {
             }
         }
         if (step < STEPS - 1) PrimaryButton("다음", { step++ })
-        else {
-            PrimaryButton("똑똑가계부에서 가져오기", { finish(Screen.Data) })
-            TextButton(onClick = { finish() }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("새로 시작하기", color = pal.sub) }
-        }
+        else PrimaryButton("시작하기", { finish() })
     }
     if (pickDay) ChoiceDialog("한 달 시작일", (1..28).map { "매월 ${it}일" }, startDay - 1, { pickDay = false }) { startDay = it + 1; pickDay = false }
 }

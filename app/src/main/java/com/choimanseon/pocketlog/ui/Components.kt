@@ -45,10 +45,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.material.icons.rounded.ArrowDropDown
@@ -79,6 +82,7 @@ import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.signedAmount
+import com.choimanseon.pocketlog.domain.tops
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 import java.time.ZoneId
@@ -303,6 +307,7 @@ fun sourceLabel(s: TxSource) = when (s) {
     TxSource.RECEIPT -> "영수증"
     TxSource.VOICE -> "말로"
     TxSource.DUMMY -> "더미"
+    TxSource.REPEAT -> "반복"
     TxSource.IMPORT, TxSource.MANUAL -> null // imported history would put a tag on thousands of rows
 }
 
@@ -319,6 +324,7 @@ fun amountColor(tx: Tx): Color = when {
     tx.status == TxStatus.CANCELED -> pal.faint
     tx.type == TxType.INCOME || (tx.type == TxType.EXPENSE && tx.amount < 0) -> pal.income
     tx.type == TxType.TRANSFER -> pal.sub
+    tx.type == TxType.SAVING -> pal.brand
     else -> pal.text
 }
 
@@ -368,14 +374,13 @@ fun TxRow(
 
 // ---------------------------------------------------------------- pickers
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryPickerSheet(
     type: TxType, categories: List<Category>, selected: Long?, onDismiss: () -> Unit,
     noneLabel: String = "카테고리 없음", onManage: (() -> Unit)? = null, onPick: (Long?) -> Unit,
 ) {
-    val tops = categories.filter { it.type == type && it.parentId == null && !it.hidden }
-    var open by remember { mutableStateOf(categories.firstOrNull { it.id == selected }?.let { it.parentId ?: it.id }) }
+    val tops = categories.tops(type).filter { !it.hidden }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = pal.bg) {
         Text("카테고리", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         LazyVerticalGrid(
@@ -383,22 +388,13 @@ fun CategoryPickerSheet(
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         ) {
             items(tops) { c ->
-                val hasChildren = categories.any { it.parentId == c.id && !it.hidden }
                 Column(
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { if (hasChildren) open = c.id else onPick(c.id) }.padding(vertical = 10.dp),
+                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { onPick(c.id) }.padding(vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    CategoryIcon(c, 48.dp, selected = c.id == selected || c.id == open)
+                    CategoryIcon(c, 48.dp, selected = c.id == selected)
                     Text(c.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
                 }
-            }
-        }
-        open?.let { pid ->
-            val parent = categories.firstOrNull { it.id == pid }
-            val subs = categories.filter { it.parentId == pid && !it.hidden }
-            if (subs.isNotEmpty()) FlowRow(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("${parent?.name} 전체", selected = selected == pid) { onPick(pid) }
-                subs.forEach { s -> Chip(s.name, selected = selected == s.id) { onPick(s.id) } }
             }
         }
         Row(Modifier.padding(horizontal = 12.dp)) {
@@ -578,22 +574,38 @@ fun LabeledDonut(slices: List<Slice>, modifier: Modifier = Modifier, onSlice: (I
     }
 }
 
-/** Bars (or a line) per period; negative values hang below zero, [average] is a dashed line. */
+/** Bars (or a line) per period; negative values hang below zero, [average] and [budget] are dashed lines. */
 @Composable
 fun TrendChart(
     values: List<Long>, labels: List<String>, highlight: Int, modifier: Modifier = Modifier,
-    average: Long? = null, line: Boolean = false, color: (Long) -> Color,
+    average: Long? = null, budget: Long? = null, line: Boolean = false, onStep: ((Int) -> Unit)? = null, color: (Long) -> Color,
 ) {
     val anim = remember { Animatable(0f) }
-    LaunchedEffect(values, line) { anim.snapTo(0f); anim.animateTo(1f, tween(600)) }
+    var dragging by remember { mutableStateOf(false) }
+    LaunchedEffect(values, line) { if (dragging) anim.snapTo(1f) else { anim.snapTo(0f); anim.animateTo(1f, tween(600)) } }
+    // dragging sideways moves the period one bar at a time: right shows earlier, left later (TODO #23)
+    val step by rememberUpdatedState(onStep)
+    val drag = if (onStep == null) Modifier else Modifier.pointerInput(values.size) {
+        var dx = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { dx = 0f; dragging = true }, onDragEnd = { dragging = false }, onDragCancel = { dragging = false },
+        ) { change, d ->
+            change.consume()
+            dx += d
+            val slot = size.width / values.size.coerceAtLeast(1)
+            val n = (dx / slot).toInt()
+            if (n != 0) { dx -= n * slot; step?.invoke(-n) }
+        }
+    }
     val measurer = rememberTextMeasurer()
     val axis = MaterialTheme.typography.labelSmall.copy(color = pal.sub)
     val avgColor = pal.warn
+    val budgetColor = pal.danger
     val grid = pal.divider
     Column(modifier) {
-        Canvas(Modifier.fillMaxWidth().height(170.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(170.dp).semantics { contentDescription = "기간별 차트" }.then(drag)) {
             if (values.isEmpty()) return@Canvas
-            val top = maxOf(values.max(), average ?: 0, 0)
+            val top = maxOf(values.max(), average ?: 0, budget ?: 0, 0)
             val bottom = minOf(values.min(), 0)
             val span = (top - bottom).coerceAtLeast(1).toFloat()
             val pad = 14.dp.toPx()
@@ -623,6 +635,13 @@ fun TrendChart(
                 drawLine(avgColor, Offset(0f, ay), Offset(size.width, ay), 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f)))
                 val t = measurer.measure("평균 ${shortWon(average)}", axis.copy(color = avgColor))
                 drawText(t, topLeft = Offset(size.width - t.size.width, (ay - t.size.height).coerceAtLeast(0f)))
+            }
+            if (budget != null) {
+                val by = y(budget)
+                drawLine(budgetColor, Offset(0f, by), Offset(size.width, by), 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 8f)))
+                val t = measurer.measure("예산 ${shortWon(budget)}", axis.copy(color = budgetColor))
+                // left end, under the line when the top axis label is in the way
+                drawText(t, topLeft = Offset(0f, if (by - t.size.height < t.size.height) by + 2.dp.toPx() else by - t.size.height))
             }
         }
         val every = (labels.size + 13) / 14
@@ -657,11 +676,27 @@ fun ColorPickerDialog(initial: Color, onDismiss: () -> Unit, onPick: (Color) -> 
     var sat by remember { mutableFloatStateOf(hsv[1]) }
     var v by remember { mutableFloatStateOf(hsv[2]) }
     val color = Color.hsv(h, sat, v)
+    // typed fields (TODO #21): dragging rewrites them all; typing one updates the others once it is a valid color
+    fun hexOf(argb: Int) = "%06X".format(argb and 0xFFFFFF)
+    fun rgbOf(argb: Int) = listOf(argb shr 16, argb shr 8, argb).map { (it and 0xFF).toString() }
+    var hex by remember { mutableStateOf(hexOf(initial.toArgb())) }
+    val rgb = remember { mutableStateListOf(*rgbOf(initial.toArgb()).toTypedArray()) }
+    fun setHsv(argb: Int) = FloatArray(3).also { android.graphics.Color.colorToHSV(argb, it) }.let { h = it[0]; sat = it[1]; v = it[2] }
+    fun sync() = Color.hsv(h, sat, v).toArgb().let { hex = hexOf(it); rgbOf(it).forEachIndexed { i, c -> rgb[i] = c } }
+    fun typeHex(text: String) {
+        hex = text.uppercase().filter { it in "0123456789ABCDEF" }.take(6)
+        if (hex.length == 6) (hex.toInt(16) or 0xFF000000.toInt()).let { setHsv(it); rgbOf(it).forEachIndexed { i, c -> rgb[i] = c } }
+    }
+    fun typeChannel(i: Int, text: String) {
+        rgb[i] = text.filter(Char::isDigit).take(3)
+        val (r, g, b) = rgb.map { it.toIntOrNull()?.takeIf { n -> n in 0..255 } ?: return }
+        android.graphics.Color.rgb(r, g, b).let { setHsv(it); hex = hexOf(it) }
+    }
     fun Modifier.drag(set: PointerInputScope.(Offset) -> Unit) = pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown()
-            set(down.position)
-            drag(down.id) { set(it.position); it.consume() }
+            set(down.position); sync()
+            drag(down.id) { set(it.position); sync(); it.consume() }
         }
     }
     AlertDialog(
@@ -682,11 +717,23 @@ fun ColorPickerDialog(initial: Color, onDismiss: () -> Unit, onPick: (Color) -> 
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(36.dp).clip(CircleShape).background(color))
-                    Text("#%06X".format(color.toArgb() and 0xFFFFFF), style = MaterialTheme.typography.bodyMedium, color = pal.sub, modifier = Modifier.padding(start = 12.dp))
+                    OutlinedTextField(
+                        hex, ::typeHex, Modifier.padding(start = 12.dp).weight(1f), singleLine = true, label = { Text("HEX") }, prefix = { Text("#") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    "RGB".forEachIndexed { i, c ->
+                        OutlinedTextField(
+                            rgb[i], { typeChannel(i, it) }, Modifier.weight(1f), singleLine = true, label = { Text(c.toString()) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                    }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onPick(color) }) { Text("선택") } },
+        // the typed hex is exactly what the user sees; the HSV round trip can be one step off
+        confirmButton = { TextButton(onClick = { onPick(if (hex.length == 6) Color(hex.toInt(16) or 0xFF000000.toInt()) else color) }) { Text("선택") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
     )
 }

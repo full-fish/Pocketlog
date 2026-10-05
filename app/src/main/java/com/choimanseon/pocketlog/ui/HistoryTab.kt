@@ -37,6 +37,7 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.Period
 import com.choimanseon.pocketlog.domain.TxFilter
+import com.choimanseon.pocketlog.domain.label
 import com.choimanseon.pocketlog.domain.matches
 import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.countable
@@ -53,7 +54,7 @@ import java.time.format.TextStyle
 import java.util.Locale
 
 // no 이체 tab: money moving between my own accounts isn't recorded (TODO #7); old transfers still show under 전체
-private val typeFilters = listOf<TxType?>(null, TxType.EXPENSE, TxType.INCOME)
+private val typeFilters = listOf<TxType?>(null, TxType.EXPENSE, TxType.INCOME, TxType.SAVING)
 
 @Composable
 fun HistoryTab(nav: Nav) {
@@ -74,12 +75,11 @@ fun HistoryTab(nav: Nav) {
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
-    // 카테고리 · 결제수단으로 보기 (TODO #5); a category also matches its subcategories and order items (splits)
-    val txs = remember(all, splits, cats, catFilter, payFilter) {
+    // 카테고리 · 결제수단으로 보기 (TODO #5); a category also matches order items (splits)
+    val txs = remember(all, splits, catFilter, payFilter) {
         val splitsByTx = splits.groupBy { it.txId }
-        fun inCat(id: Long?) = id != null && (id == catFilter || catMap[id]?.parentId == catFilter)
         all.filter { tx ->
-            (catFilter == null || inCat(tx.categoryId) || splitsByTx[tx.id].orEmpty().any { inCat(it.categoryId) }) &&
+            (catFilter == null || tx.categoryId == catFilter || splitsByTx[tx.id].orEmpty().any { it.categoryId == catFilter }) &&
                 (payFilter == null || tx.paymentMethodId == payFilter)
         }
     }
@@ -120,7 +120,7 @@ fun HistoryTab(nav: Nav) {
             TextButton(onClick = {
                 val types = txs.filter { it.id in selected }.map { it.type }.toSet()
                 if (types.size == 1 && TxType.TRANSFER !in types) pickCategory = types.single()
-                else nav.toast(if (TxType.TRANSFER in types) "이체는 카테고리가 없어요" else "지출과 수입은 따로 골라 주세요")
+                else nav.toast(if (TxType.TRANSFER in types) "이체는 카테고리가 없어요" else "지출 · 수입 · 저축은 따로 골라 주세요")
             }) { Text("카테고리") }
             TextButton(onClick = ::deleteSelected) { Text("삭제", color = pal.danger) }
         } else Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -136,7 +136,7 @@ fun HistoryTab(nav: Nav) {
             "지출 ${num(spent)} · 수입 ${num(income)} · 남은 돈 ${num(income - spent)}",
             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp),
         )
-        PillTabs(listOf("전체", "지출", "수입"), filter, Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) { filter = it }
+        PillTabs(typeFilters.map { it?.label ?: "전체" }, filter, Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) { filter = it }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Chip(catFilter?.let { catMap[it]?.name } ?: "카테고리 전체", catFilter != null) { picking = "cat" }
             Chip(payFilter?.let { payMap[it]?.name } ?: "결제수단 전체", payFilter != null) { picking = "pay" }
@@ -178,14 +178,15 @@ fun TxListScreen(title: String, filter: TxFilter, nav: Nav) {
     val dao = app.dao
     val txs by rememberFlow(emptyList(), filter) { dao.txBetween(filter.start, filter.end) }
     val splits by rememberFlow(emptyList(), filter) { dao.splitsBetween(filter.start, filter.end) }
+    val tags by rememberFlow(emptyList(), filter) { dao.tagsBetween(filter.start, filter.end) }
     val cats by rememberFlow(emptyList()) { dao.categories() }
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
-    val shown = remember(txs, splits, cats, filter) {
-        val parentOf = cats.associate { it.id to it.parentId }
+    val shown = remember(txs, splits, tags, filter) {
         val splitsByTx = splits.groupBy { it.txId }
-        txs.filter { filter.matches(it, splitsByTx[it.id], parentOf) }
+        val tagsByTx = tags.groupBy({ it.txId }, { it.tagId })
+        txs.filter { filter.matches(it, splitsByTx[it.id], tagsByTx[it.id]) }
     }
     PageScaffold(title, onBack = nav::pop) {
         val sums = if (filter.type == null) "수입 ${num(total(shown, TxType.INCOME))} · 지출 ${num(total(shown, TxType.EXPENSE))}" else "합계 ${num(shown.sumOf { it.amount })}"

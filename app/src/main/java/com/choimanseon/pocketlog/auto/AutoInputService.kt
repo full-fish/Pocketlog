@@ -3,6 +3,10 @@ package com.choimanseon.pocketlog.auto
 import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -43,8 +47,32 @@ class AutoInputService : NotificationListenerService() {
         app.scope.launch { messages.forEach { m -> runCatching { AutoInput.handle(pkg, m.title, m.body, m.time) }.onFailure { Log.w("AutoInput", it) } } }
     }
 
+    override fun onListenerConnected() {
+        connected = this
+        catchUp()
+    }
+
+    override fun onListenerDisconnected() {
+        connected = null
+    }
+
     companion object {
+        private var connected: AutoInputService? = null
+
+        /**
+         * Reads what is still in the notification shade (TODO #48). A notification can slip by while the system has the app
+         * frozen or unbound; one already read is skipped by its body, so this is safe to run any time.
+         */
+        fun catchUp() = connected?.let { s -> runCatching { s.activeNotifications?.forEach(s::onNotificationPosted) } }
+
         fun granted(context: Context) = context.packageName in NotificationManagerCompat.getEnabledListenerPackages(context)
+
+        /** 배터리 '제한 없음' (TODO #46): phones put idle apps to sleep, and a sleeping listener can miss a notification. */
+        fun unrestricted(context: Context) = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
+
+        fun askUnrestricted(context: Context) = runCatching {
+            context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}")))
+        }.recoverCatching { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
 
         /** Some OEMs unbind listeners after app updates; ask the system to bind again. */
         fun rebind(context: Context) {
