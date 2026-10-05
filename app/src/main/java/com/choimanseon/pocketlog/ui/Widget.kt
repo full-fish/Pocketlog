@@ -6,7 +6,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.glance.Button
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.LocalSize
@@ -56,14 +55,15 @@ import java.time.temporal.ChronoUnit
 
 /**
  * Home screen widget (TODO #35, #61): it grows with its size, measured exactly (a Samsung home row is about 118dp high).
- * - one row: this month's spending and the budget bar; wide, also 입력 · 촬영 · 사진
- * - two rows: + the budget and pace in words, what is left for today
- * - three rows and more: + today's spending and the top categories; taller still, the latest records
+ * - one row: this month's spending and the budget bar; wide, also small 입력 · 촬영 · 사진
+ * - two rows and more: + the budget and pace in words, big 입력 · 촬영 · 사진 at the bottom, and as the height allows
+ *   today's spending, the top categories and the latest records (TODO #63)
  * With the app lock on it shows no amounts. App refreshes it whenever Tx or Budget change, Daily once a day.
  */
 class PocketWidget : GlanceAppWidget() {
     companion object {
         const val ACTION = "widget_action" // entry | camera | photos, read by MainActivity
+        private const val BUTTONS = 52f // dp the 입력 · 촬영 · 사진 row takes from two rows up
         suspend fun refresh(context: Context) = runCatching { PocketWidget().updateAll(context) }
     }
 
@@ -111,6 +111,7 @@ class PocketWidget : GlanceAppWidget() {
         val fg = ColorProvider(Color(0xFF111111), Color(0xFFF2F3F5))
         val sub = ColorProvider(Color(0xFF6B7280), Color(0xFF9AA0A6))
         val chip = ColorProvider(Color(0xFFEEF0F4), Color(0xFF2A2C33))
+        val brand = ColorProvider(Color(0xFF4C5BF5), Color(0xFF6B7BFF))
         val size = LocalSize.current
         val pad = if (size.height < 150.dp) 12.dp else 16.dp
         val inner = size.width - pad * 2
@@ -139,27 +140,45 @@ class PocketWidget : GlanceAppWidget() {
                 if (n.used != null && size.height >= 105.dp) Text(n.line, GlanceModifier.padding(top = 4.dp), small, maxLines = 1)
                 return@Column
             }
-            Text(n.spent, GlanceModifier.padding(vertical = 2.dp), TextStyle(color = fg, fontSize = 26.sp, fontWeight = FontWeight.Bold), maxLines = 1)
-            if (n.used != null) {
-                BudgetBar(n, inner, fg)
-                Text("지금쯤이면 ${(n.expected!! * 100).toInt()}%가 맞아요", GlanceModifier.padding(top = 4.dp), small, maxLines = 1)
-            }
-            Text(n.line, GlanceModifier.padding(top = 2.dp), small, maxLines = 2)
-            if (size.height >= 300.dp && !n.locked) {
-                Text("오늘 쓴 돈 ${won(n.today)}", GlanceModifier.padding(top = 10.dp), TextStyle(color = fg, fontSize = 14.sp, fontWeight = FontWeight.Medium))
-                if (n.tops.isNotEmpty()) {
-                    Text("많이 쓴 곳", GlanceModifier.padding(top = 10.dp, bottom = 2.dp), small)
-                    n.tops.forEach { (name, amount) -> Line(name, num(amount), fg, null) }
+            // a weighted column only gets the height the button row leaves, so the buttons never get pushed out
+            Column(GlanceModifier.defaultWeight().fillMaxWidth()) {
+                Text(n.spent, GlanceModifier.padding(vertical = 2.dp), TextStyle(color = fg, fontSize = 26.sp, fontWeight = FontWeight.Bold), maxLines = 1)
+                if (n.used != null) {
+                    BudgetBar(n, inner, fg)
+                    Text("지금쯤이면 ${(n.expected!! * 100).toInt()}%가 맞아요", GlanceModifier.padding(top = 4.dp), small, maxLines = 1)
                 }
-                if (size.height >= 420.dp && n.recent.isNotEmpty()) {
-                    Text("최근 내역", GlanceModifier.padding(top = 10.dp, bottom = 2.dp), small)
-                    n.recent.forEach { (day, merchant, amount) -> Line(merchant, num(amount), fg, day) }
+                Text(n.line, GlanceModifier.padding(top = 2.dp), small, maxLines = 1)
+                // the buttons always keep their place at the bottom (TODO #63); the extras take only the height left above them
+                var room = size.height.value - pad.value * 2 - 18 - 38 - 22 - (if (n.used != null) 38 else 0) - BUTTONS
+                val today = !n.locked && room >= 26
+                if (today) room -= 26
+                val tops = if (n.locked) 0 else ((room - 26) / 22).toInt().coerceIn(0, n.tops.size)
+                if (tops > 0) room -= 26 + tops * 22
+                val recent = if (n.locked) 0 else ((room - 26) / 22).toInt().coerceIn(0, n.recent.size).takeIf { it >= 2 } ?: 0
+                if (today) Text("오늘 쓴 돈 ${won(n.today)}", GlanceModifier.padding(top = 8.dp), TextStyle(color = fg, fontSize = 14.sp, fontWeight = FontWeight.Medium))
+                // each list in its own Column: Glance drops every child of a Column past the 10th
+                if (tops > 0) Column(GlanceModifier.fillMaxWidth()) {
+                    Text("많이 쓴 곳", GlanceModifier.padding(top = 8.dp, bottom = 2.dp), small)
+                    n.tops.take(tops).forEach { (name, amount) -> Line(name, num(amount), fg, null) }
+                }
+                if (recent > 0) Column(GlanceModifier.fillMaxWidth()) {
+                    Text("최근 내역", GlanceModifier.padding(top = 8.dp, bottom = 2.dp), small)
+                    n.recent.take(recent).forEach { (day, merchant, amount) -> Line(merchant, num(amount), fg, day) }
                 }
             }
-            if (wide) {
-                Spacer(GlanceModifier.defaultWeight())
-                Row(GlanceModifier.fillMaxWidth().padding(top = 8.dp)) {
-                    buttons.forEach { (label, action) -> Button(label, open(action), GlanceModifier.defaultWeight().padding(horizontal = 2.dp)) }
+            Row(GlanceModifier.fillMaxWidth().padding(top = 8.dp)) {
+                buttons.forEachIndexed { i, (label, action) ->
+                    if (i > 0) Spacer(GlanceModifier.width(8.dp))
+                    // drawn here, not Glance's Button: that one came out small on the Samsung home (TODO #63)
+                    Box(
+                        GlanceModifier.defaultWeight().height(44.dp).cornerRadius(14.dp).background(if (i == 0) brand else chip).clickable(open(action)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (wide || i > 0) label else "입력", maxLines = 1,
+                            style = TextStyle(color = if (i == 0) ColorProvider(Color.White, Color.White) else fg, fontSize = if (wide) 15.sp else 13.sp, fontWeight = FontWeight.Bold),
+                        )
+                    }
                 }
             }
         }
