@@ -22,7 +22,8 @@ data class Pick(val category: Long, val tags: List<Long> = emptyList()) {
 
 /** User rules → built-in merchant dictionary → AI (only for merchants never seen before; the answer is cached as a rule). */
 object Categorizer {
-    // category name to (tag name or null) to merchant words; the first hit wins, so specific words come first
+    // category name to (tag name or null) to merchant words; the first hit wins, so specific words come first.
+    // "A|B": category A if the user has it, else B (the tag is looked up under whichever was found)
     private fun w(category: String, tag: String?, words: String) = Triple(category, tag, Regex(words, RegexOption.IGNORE_CASE))
 
     private val expenseWords = listOf(
@@ -54,6 +55,8 @@ object Categorizer {
         w("술·유흥", "노래방·놀거리", "노래|PC방|볼링"),
         w("술·유흥", "술집", "주점|포차|호프|이자카야"),
         w("술·유흥", "홈술", "와인|데일리샷|맥주"),
+        // 개발 구독비, not 교육 (사용자 결정): the imported 똑똑가계부 category if it exists, else 구독 › 개발 툴
+        w("개발 구독비|구독", "개발 툴", """GITHUB|깃허브|\bAWS\b|AMAZON WEB SERVICES|ANTHROPIC|CLAUDE|OPENAI|CHATGPT|CLOUDFLARE"""),
         w("구독", "OTT", "넷플릭스|NETFLIX|유튜브|YOUTUBE|디즈니|티빙|웨이브|왓챠|쿠팡플레이"),
         w("구독", "음악", "멜론|스포티파이|SPOTIFY"),
         w("구독", "클라우드·앱", """APPLE\.COM"""),
@@ -95,7 +98,8 @@ object Categorizer {
         val words = if (type == TxType.INCOME) incomeWords else expenseWords
         val (name, tag) = words.firstOrNull { it.third.containsMatchIn(merchant) }?.let { it.first to it.second }
             ?: if (type == TxType.INCOME) "용돈·기타" to null else return null
-        val category = categories.tops(type).firstOrNull { !it.hidden && it.name == name } ?: return null
+        val tops = categories.tops(type).filter { !it.hidden }
+        val category = name.split('|').firstNotNullOfOrNull { n -> tops.firstOrNull { it.name == n } } ?: return null
         val tagId = tag?.let { t -> categories.firstOrNull { it.parentId == category.id && it.name == t }?.id }
         return Pick(category.id, listOfNotNull(tagId))
     }

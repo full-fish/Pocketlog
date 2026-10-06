@@ -189,6 +189,32 @@ class AutoInputTest {
     }
 
     @Test
+    fun partialCancelIsANegativeExpenseInTheOriginalCategory() {
+        receive("[Web발신]\n삼성1234승인 홍*동\n30,000원 일시불\n$mmdd 무신사")
+        receive("[Web발신]\n삼성1234승인취소 홍*동\n10,000원 일시불\n$mmdd 무신사", at = post + 60_000)
+        val buy = txs().single { it.amount > 0 }
+        val refund = txs().single { it.amount < 0 }
+        assertEquals(-10_000L, refund.amount)
+        assertEquals(TxType.EXPENSE, refund.type)
+        assertEquals(buy.categoryId, refund.categoryId)
+        assertEquals(TxStatus.CONFIRMED, buy.status)
+    }
+
+    @Test
+    fun devToolsAreDevSubscriptionsNotEducation() = runBlocking {
+        fun cats() = runBlocking { dao.categoriesOnce() }
+        fun pick(merchant: String) = Categorizer.fromDictionary(merchant, TxType.EXPENSE, cats())
+        val subs = cats().first { it.name == "구독" && it.parentId == null }
+        val devTag = cats().first { it.name == "개발 툴" && it.parentId == subs.id }
+        for (m in listOf("GITHUB.COM", "AWS EMEA", "AMAZON WEB SERVICES", "CLAUDE.AI SUBSCRIPTION", "ANTHROPIC", "OPENAI *CHATGPT SUBSCR", "CLOUDFLARE")) {
+            assertEquals(m, Pick(subs.id, listOf(devTag.id)), pick(m))
+        }
+        // a 똑똑가계부 import has its own 개발 구독비 category: that one wins
+        val dev = dao.upsert(com.choimanseon.pocketlog.data.Category(type = TxType.EXPENSE, name = "개발 구독비", icon = "code", color = 0, sort = 99))
+        assertEquals(Pick(dev), pick("GITHUB.COM"))
+    }
+
+    @Test
     fun salaryIsIncome() {
         receive("입금 3,200,000원 (주)회사이름 급여 잔액 4,434,567원", title = "카카오뱅크", pkg = "com.kakaobank.channel")
         val tx = txs().single()
