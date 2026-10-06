@@ -224,7 +224,10 @@ class ScreenshotTest {
         // 즐겨찾기 opens as a list beside the merchant field and fills the form (TODO #47)
         runBlocking(Dispatchers.IO) { app.dao.upsert(com.choimanseon.pocketlog.data.Favorite(amount = 4500, merchant = "단골 김밥")) }
         compose.runOnUiThread { nav().entry = com.choimanseon.pocketlog.ui.Entry() }
+        shot("9-entry-sheet") // drawn in the app's own window, over the home screen (TODO #65)
         compose.onNodeWithText("즐겨찾기").performClick()
+        // the list comes from the database off the main thread: wait for it
+        compose.waitUntil(5000) { compose.onAllNodesWithText("단골 김밥", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("단골 김밥").performClick()
         compose.waitForIdle()
         compose.onAllNodesWithText("4,500원")[0].assertExists()

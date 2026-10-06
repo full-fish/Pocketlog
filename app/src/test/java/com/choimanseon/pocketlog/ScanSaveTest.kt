@@ -98,4 +98,37 @@ class ScanSaveTest {
         assertEquals("휴지 30롤 3겹 외 1개" to "이사", tx.memo to tx.note)
         assertEquals(listOf(family), dao.tagsOfOnce(sms))
     }
+
+    @Test
+    fun anItemsTagsChangeAfterSaving() = runBlocking(Dispatchers.IO) {
+        val cats = fresh()
+        val life = cats.named("생활").id
+        val family = cats.named("가족").id
+        val date = cats.named("데이트").id
+        val laundry = cats.named("세탁·청소").id
+        save(OrderChoice(true, null, listOf(life, life), 15000, null, tags = listOf(setOf(family), emptySet())))
+        val tx = dao.txAround(0, Long.MAX_VALUE).single()
+        dao.setTags(tx.id, listOf(family, date)) // 데이트: the record's own, from 수정
+        val (paper, soap) = dao.splitsOf(tx.id).first()
+        // 내역 → 품목 (TODO #67): 세제 gets 세탁·청소, 휴지 loses 가족; the record follows and keeps its own 데이트
+        Scan.editItem(tx.id, soap.id, life, setOf(laundry))
+        Scan.editItem(tx.id, paper.id, life, emptySet())
+        assertEquals(listOf("", "$laundry"), dao.splitsOf(tx.id).first().map { it.tags })
+        assertEquals(setOf(date, laundry), dao.tagsOfOnce(tx.id).toSet())
+    }
+
+    @Test
+    fun aScreenshotWhoseRecordIsDeletedCanBeSavedAgain() = runBlocking(Dispatchers.IO) {
+        fresh()
+        val job = ScanJob(imageHash = "same", imageCount = 0, status = ScanStatus.DONE).let { it.copy(id = dao.insert(it)) }
+        Scan.save(job, ScanResult("coupang", listOf(order), emptyList()), listOf(OrderChoice(true, null, listOf(null, null), 15000, null)), false)
+        val image = listOf(byteArrayOf(1, 2, 3))
+        // still recorded: the same screenshot only shows it as saved
+        assertEquals(job.id, Scan.reuse("same", image))
+        assertEquals(ScanStatus.SAVED, dao.scanJobOnce(job.id)!!.status)
+        // its record deleted: the earlier analysis opens for review again, images back, no new job (TODO #66)
+        dao.softDelete(dao.txAround(0, Long.MAX_VALUE).single().id)
+        assertEquals(job.id, Scan.reuse("same", image))
+        assertEquals(ScanStatus.DONE to 1, dao.scanJobOnce(job.id)!!.let { it.status to it.imageCount })
+    }
 }

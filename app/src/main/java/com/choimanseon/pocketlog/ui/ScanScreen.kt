@@ -35,6 +35,7 @@ import com.choimanseon.pocketlog.ai.ScanOrder
 import com.choimanseon.pocketlog.ai.ScanResult
 import com.choimanseon.pocketlog.ai.sourceNames
 import com.choimanseon.pocketlog.app
+import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.ScanJob
 import com.choimanseon.pocketlog.data.ScanStatus
@@ -97,6 +98,23 @@ private fun Analyzing(job: ScanJob?) {
 }
 
 private enum class Dup { MERGE, NEW, SKIP }
+
+/** An item's tags in rows like the entry sheet's: its category's, then the shared ones (review screen, 내역 → 품목). */
+@Composable
+fun ItemTagRows(cats: List<Category>, category: Long?, picked: Set<Long>, onToggle: (Long) -> Unit) {
+    val shared = cats.firstOrNull { it.type == TxType.EXPENSE && it.tagGroup }
+    listOfNotNull(cats.firstOrNull { it.id == category }, shared).forEach { owner ->
+        val tags = cats.filter { it.parentId == owner.id && !it.hidden }
+        if (tags.isEmpty()) return@forEach
+        Row(
+            Modifier.padding(horizontal = 24.dp, vertical = 4.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(if (owner.tagGroup) "공통" else owner.name, style = MaterialTheme.typography.labelSmall, color = pal.sub, modifier = Modifier.widthIn(min = 36.dp))
+            tags.forEach { t -> Chip("#${t.name}", t.id in picked) { onToggle(t.id) } }
+        }
+    }
+}
 
 @Composable
 private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav) {
@@ -219,21 +237,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     pickCat?.let { (o, k) ->
         // the sheet stays open: a category, then its tags and the shared ones in rows like the entry sheet's, then 완료
         CategoryPickerSheet(TxType.EXPENSE, cats, itemCats[o][k], onDismiss = { pickCat = null }, extra = {
-            val shared = cats.firstOrNull { it.type == TxType.EXPENSE && it.tagGroup }
-            listOfNotNull(itemCats[o][k]?.let(catMap::get), shared).forEach { owner ->
-                val tags = cats.filter { it.parentId == owner.id && !it.hidden }
-                if (tags.isEmpty()) return@forEach
-                Row(
-                    Modifier.padding(horizontal = 24.dp, vertical = 4.dp).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(if (owner.tagGroup) "공통" else owner.name, style = MaterialTheme.typography.labelSmall, color = pal.sub, modifier = Modifier.widthIn(min = 36.dp))
-                    tags.forEach { t ->
-                        val on = t.id in picks[o][k]
-                        Chip("#${t.name}", on) { picks[o][k] = if (on) picks[o][k] - t.id else picks[o][k] + t.id }
-                    }
-                }
-            }
+            ItemTagRows(cats, itemCats[o][k], picks[o][k]) { t -> picks[o][k] = if (t in picks[o][k]) picks[o][k] - t else picks[o][k] + t }
             PrimaryButton("완료", { pickCat = null }, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         }) { id ->
             itemCats[o][k] = id

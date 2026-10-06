@@ -23,6 +23,7 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.tagIds
 import com.choimanseon.pocketlog.domain.tagsFor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -102,11 +103,24 @@ object Scan {
         val tiles = uris.flatMap { runCatching { tiles(context, it) }.getOrDefault(emptyList()) }.take(MAX_TILES)
         require(tiles.isNotEmpty()) { "이미지를 읽을 수 없어요" }
         val hash = MessageDigest.getInstance("SHA-256").run { tiles.forEach { update(it) }; digest() }.joinToString("") { "%02x".format(it) }
-        app.dao.scanByHash(hash)?.let { return@withContext it.id }
+        reuse(hash, tiles)?.let { return@withContext it }
         val id = app.dao.insert(ScanJob(imageHash = hash, imageCount = tiles.size, status = ScanStatus.RUNNING))
         tiles.forEachIndexed { i, bytes -> File(dir(), "${id}_$i.jpg").writeBytes(bytes) }
         app.scope.launch { run(id) }
         id
+    }
+
+    /**
+     * The same screenshot again opens its earlier analysis, with no second AI call. One saved before whose records were
+     * all deleted since opens for review again, its images back (TODO #66); one still recorded shows as saved.
+     */
+    suspend fun reuse(hash: String, tiles: List<ByteArray>): Long? {
+        val old = app.dao.scanByHash(hash) ?: return null
+        if (old.status == ScanStatus.SAVED && app.dao.liveTxOfScan(old.id) == 0) {
+            tiles.forEachIndexed { i, bytes -> File(dir(), "${old.id}_$i.jpg").writeBytes(bytes) }
+            app.dao.update(old.copy(status = ScanStatus.DONE, imageCount = tiles.size))
+        }
+        return old.id
     }
 
     suspend fun run(id: Long) {
@@ -193,7 +207,7 @@ object Scan {
 
     /**
      * Runs at app start. Images go when nothing needs them: an analysis never saved after 30 days, or a saved one whose
-     * transactions were all deleted. Saved ones from before shrinking existed are shrunk now. The hash stays, so a repeat is still spotted.
+     * transactions were all deleted. Saved ones from before shrinking existed are shrunk now. The hash stays, so a repeat opens the old analysis ([reuse]).
      */
     suspend fun tidy(now: Long = System.currentTimeMillis()) {
         val dao = app.dao
@@ -277,6 +291,31 @@ object Scan {
     /** One record for the whole order in [category]: each item's tags that fit its own category, then those that fit [category]. */
     fun orderTags(category: Long?, itemCats: List<Long?>, picks: List<Collection<Long>>, categories: List<Category>) =
         tagsOn(category, picks.flatMapIndexed { i, p -> tagsOn(itemCats.getOrNull(i), p, categories) }, categories)
+
+    /**
+     * 내역 → 품목 (TODO #67): one item's category and tags changed after saving. The record keeps the tags it has of its own and
+     * carries its items' tags, as a fresh save does. Items from before DB 8 get an empty list, so tag totals stay per item;
+     * the 배송비·할인 line is no item and stays without.
+     */
+    suspend fun editItem(txId: Long, splitId: Long, category: Long?, tags: Collection<Long>) {
+        val dao = app.dao
+        val tx = dao.txOnce(txId) ?: return
+        val cats = dao.categoriesOnce()
+        val splits = dao.splitsOf(txId).first()
+        val adjust = adjustment(splits)
+        val own = dao.tagsOfOnce(txId).filter { t -> splits.none { t in it.tagIds() } }
+        val edited = splits.map { s ->
+            when {
+                s.id == splitId -> s.copy(categoryId = category, tags = tagsOn(category, tags, cats).joinToString(","))
+                s == adjust || s.tags != null -> s
+                else -> s.copy(tags = "")
+            }
+        }
+        dao.replaceItems(txId, edited, (own + tagsOn(tx.categoryId, edited.flatMap { it.tagIds() }, cats)).distinct())
+    }
+
+    /** The line [splitsFor] adds when the items don't add up to what was paid; not an item. */
+    fun adjustment(splits: List<TxSplit>) = splits.lastOrNull()?.takeIf { it.tags == null && it.name in setOf("배송비·할인", "기타") }
 
     /** Compares [tx] (with its [txSplits] and [txTags]) with what the review screen would put in it: [planned] items and [tags]. */
     fun holds(tx: Tx, txSplits: List<TxSplit>, txTags: Collection<Long>, planned: List<TxSplit>, tags: Collection<Long>): Holds {

@@ -3,6 +3,7 @@ package com.choimanseon.pocketlog.ui
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -33,10 +34,12 @@ import com.choimanseon.pocketlog.data.RawMessage
 import com.choimanseon.pocketlog.data.RawStatus
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
+import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.copyNow
 import com.choimanseon.pocketlog.domain.num
+import com.choimanseon.pocketlog.domain.tagIds
 import com.choimanseon.pocketlog.domain.label
 import com.choimanseon.pocketlog.domain.signedAmount
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +60,7 @@ fun DetailScreen(id: Long, nav: Nav) {
     val plan by rememberFlow(emptyList(), id) { dao.purchaseRowsFlow(id) }
     val tagIds by rememberFlow(emptyList(), id) { dao.tagsOf(id) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<TxSplit?>(null) } // the item whose category and tags are being changed
     val t = tx
 
     PageScaffold("내역", onBack = nav::pop) {
@@ -95,12 +99,22 @@ fun DetailScreen(id: Long, nav: Nav) {
                 InfoRow("기록 방법", if (t.source == TxSource.IMPORT) "똑똑가계부에서 가져옴" else if (t.source == TxSource.DUMMY) "테스트용 더미 데이터" else sourceLabel(t.source)?.let { "$it 자동 기록" } ?: "직접 입력")
             }
             if (splits.isNotEmpty()) {
-                SectionHeader("품목 ${splits.size}개")
+                // each item's own category and tags change here (TODO #67); the record's come from 수정
+                val adjust = Scan.adjustment(splits)
+                val editable = t.type == TxType.EXPENSE
+                SectionHeader("품목 ${splits.size}개" + if (editable) " · 눌러서 태그 바꾸기" else "")
                 PCard(Modifier.padding(horizontal = 16.dp)) {
                     splits.forEach { s ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable(enabled = editable && s != adjust) { editing = s }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             CategoryIcon(s.categoryId?.let { catMap[it] }, 28.dp)
-                            Text(s.name + if (s.quantity > 1) " ×${s.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(start = 10.dp))
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text(s.name + if (s.quantity > 1) " ×${s.quantity}" else "", style = MaterialTheme.typography.bodyMedium)
+                                val tags = s.tagIds().mapNotNull { catMap[it]?.name }
+                                if (tags.isNotEmpty()) Text(tags.joinToString(" ") { "#$it" }, style = MaterialTheme.typography.labelSmall, color = pal.sub)
+                            }
                             Text(num(s.amount), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
@@ -135,6 +149,21 @@ fun DetailScreen(id: Long, nav: Nav) {
         if (t.status == TxStatus.PENDING_REVIEW) PrimaryButton("확인했어요", {
             app.scope.launch { dao.setStatus(t.id, TxStatus.CONFIRMED) }
         }, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp))
+    }
+    editing?.let { s ->
+        var cat by remember(s.id) { mutableStateOf(s.categoryId) }
+        var picked by remember(s.id) { mutableStateOf(s.tagIds().toSet()) }
+        val done = {
+            app.scope.launch { Scan.editItem(id, s.id, cat, picked) }
+            editing = null
+        }
+        CategoryPickerSheet(TxType.EXPENSE, cats, cat, onDismiss = done, extra = {
+            ItemTagRows(cats, cat, picked) { tag -> picked = if (tag in picked) picked - tag else picked + tag }
+            PrimaryButton("완료", done, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+        }) { c ->
+            cat = c
+            picked = Scan.tagsOn(c, picked, cats).toSet()
+        }
     }
     if (confirmDelete) ConfirmDialog(
         "이 내역을 삭제할까요?",

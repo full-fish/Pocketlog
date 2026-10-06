@@ -1,5 +1,20 @@
 package com.choimanseon.pocketlog.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -88,28 +103,40 @@ private fun prettyExpr(expr: String) = Regex("""\d+|[+−×÷]""").findAll(expr)
     m.value.toLongOrNull()?.let(::num) ?: m.value
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The entry form as a sheet drawn in the app's own window (TODO #65). Material's ModalBottomSheet opens a window of its own:
+ * on Galaxy phones that window showed the navigation bar only some of the time, and a sheet opened from it stayed off-screen
+ * (TODO #59). Here the bars are the app's, so they look the same as on every other screen.
+ */
 @Composable
 fun EntrySheet(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit, onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
-    // the sheet's own window can report no navigation bar on Galaxy phones, so the activity's inset is passed in too
-    val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    var opened by remember { mutableStateOf(false) }
-    LaunchedEffect(sheetState.currentValue) { if (sheetState.currentValue == SheetValue.Expanded) opened = true }
-    // 저장 closes the sheet with its hide animation: dropping it from composition mid-show left the next one
-    // (수정 again right after) closing as soon as it opened
-    val close: () -> Unit = {
-        if (sheetState.isVisible) scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } else onDismiss()
+    val shown = remember { MutableTransitionState(false).apply { targetState = true } }
+    // 저장, back and a tap outside slide the sheet out; it leaves the composition once that is done
+    val close = { shown.targetState = false }
+    if (!shown.targetState && shown.isIdle) LaunchedEffect(Unit) { onDismiss() }
+    BackHandler(onBack = close)
+    var drag by remember { mutableFloatStateOf(0f) }
+    val far = with(LocalDensity.current) { 120.dp.toPx() }
+    AnimatedVisibility(shown, enter = EnterTransition.None, exit = ExitTransition.None) {
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxSize().animateEnterExit(enter = fadeIn(), exit = fadeOut())
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f))
+                    .clickable(remember { MutableInteractionSource() }, null, onClickLabel = "닫기", onClick = close),
+            )
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().statusBarsPadding()
+                    .animateEnterExit(enter = slideInVertically { it }, exit = slideOutVertically { it })
+                    .offset { IntOffset(0, drag.roundToInt()) }
+                    // pulled down far or fast it closes, like a Material sheet; lists inside scroll first
+                    .draggable(rememberDraggableState { drag = (drag + it).coerceAtLeast(0f) }, Orientation.Vertical, onDragStopped = { v ->
+                        if (drag > far || v > 2000f) close() else animate(drag, 0f) { x, _ -> drag = x }
+                    })
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(pal.bg)
+                    .pointerInput(Unit) {}, // a tap on the sheet itself is not one outside
+            ) { EntryForm(entry, nav, onCamera, onPhotos, close) }
+        }
     }
-    ModalBottomSheet(
-        // a dismiss before the sheet ever opened is the stray one above; show it again instead
-        onDismissRequest = { if (opened) onDismiss() else scope.launch { sheetState.show() } },
-        sheetState = sheetState,
-        containerColor = pal.bg,
-        dragHandle = null,
-        contentWindowInsets = { WindowInsets.navigationBars.union(WindowInsets(bottom = navBar)) },
-    ) { EntryForm(entry, nav, onCamera, onPhotos, close) }
 }
 
 /** The sheet's content, separate so it can be rendered on its own (ScreenshotTest). */

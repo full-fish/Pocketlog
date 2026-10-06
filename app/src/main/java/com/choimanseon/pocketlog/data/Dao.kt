@@ -149,6 +149,14 @@ interface PocketDao {
         }
     }
 
+    /** A record's items and tags at once, after one item was changed on 내역 → 품목. */
+    @Transaction
+    suspend fun replaceItems(txId: Long, splits: List<TxSplit>, tagIds: Collection<Long>) {
+        deleteSplits(txId)
+        insertSplits(splits)
+        setTags(txId, tagIds)
+    }
+
     @Query("UPDATE RawMessage SET status = 'IGNORED', txId = NULL WHERE txId = :txId")
     suspend fun ignoreRawOf(txId: Long)
 
@@ -345,6 +353,9 @@ interface PocketDao {
 
     @Query("SELECT * FROM ScanJob WHERE imageHash = :hash AND status IN ('DONE', 'SAVED') ORDER BY id DESC LIMIT 1")
     suspend fun scanByHash(hash: String): ScanJob?
+
+    @Query("SELECT COUNT(*) FROM Tx WHERE scanJobId = :id AND deletedAt IS NULL")
+    suspend fun liveTxOfScan(id: Long): Int
 
     /** Scans not saved yet: still running, failed, or done and waiting for the user (홈 카드, TODO #20). */
     @Query("SELECT * FROM ScanJob WHERE status IN ('RUNNING', 'DONE', 'FAILED') AND createdAt > :since ORDER BY id DESC")
