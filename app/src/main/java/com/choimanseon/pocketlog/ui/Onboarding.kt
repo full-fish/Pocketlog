@@ -2,6 +2,7 @@ package com.choimanseon.pocketlog.ui
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
@@ -14,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CreditCard
@@ -33,7 +35,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.AutoInputService
 
-private const val STEPS = 6
+private const val STEPS = 7
+private const val PRIVACY_URL = "https://full-fish.github.io/privacy/pocketlog/"
 
 /** First run (기획서 S01): what the app does, then the settings auto-recording needs. */
 @Composable
@@ -46,6 +49,7 @@ fun OnboardingScreen() {
     var pickDay by remember { mutableStateOf(false) }
     var listenerOn by remember { mutableStateOf(AutoInputService.granted(context)) }
     var unrestricted by remember { mutableStateOf(AutoInputService.unrestricted(context)) }
+    var aiConsent by remember { mutableStateOf(p.aiConsent) }
     LifecycleResumeEffect(Unit) {
         listenerOn = AutoInputService.granted(context)
         unrestricted = AutoInputService.unrestricted(context)
@@ -96,6 +100,27 @@ fun OnboardingScreen() {
                             Text("제한 없음이에요", style = MaterialTheme.typography.titleSmall, color = pal.income)
                         }
                         else PrimaryButton("배터리 제한 없음으로 하기", { AutoInputService.askUnrestricted(context) })
+                    }
+                    5 -> {
+                        // asked once here, before anything is sent: the overseas transfer needs the user's yes (PRIVACY.md 3, 4)
+                        Page(
+                            Icons.Rounded.AutoAwesome, "AI 분석에 동의해 주세요",
+                            "스크린샷 · 영수증 분석, 읽지 못한 결제 알림 다시 읽기, 처음 보는 가맹점 분류, 월간 리포트에 AI를 써요. " +
+                                "이때 이미지와 문구를 AI 서버(Cloudflare)를 거쳐 OpenAI(미국)로 보내요. 서버는 내용을 남기지 않고, OpenAI는 학습에 쓰지 않고 30일 안에 지워요.",
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        if (aiConsent) Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.CheckCircle, null, Modifier.padding(end = 6.dp).size(20.dp), tint = pal.income)
+                            Text("동의했어요", style = MaterialTheme.typography.titleSmall, color = pal.income)
+                        }
+                        else PrimaryButton("동의하고 AI 쓰기", { p.aiConsent = true; aiConsent = true })
+                        Text(
+                            "동의하지 않아도 직접 입력과 카드 문자 자동 기록은 그대로 돼요. 설정 → AI에서 언제든 바꿀 수 있어요.",
+                            style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 12.dp),
+                        )
+                        TextButton(onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_URL))) } }, contentPadding = PaddingValues(0.dp)) {
+                            Text("개인정보처리방침 보기")
+                        }
                     }
                     else -> {
                         Page(Icons.Rounded.AccountBalance, "내 이름과 한 달 시작일", "은행 알림에 내 이름이 받는 사람·보낸 사람으로 나오면 내 계좌끼리 옮긴 돈이라 적지 않아요.")

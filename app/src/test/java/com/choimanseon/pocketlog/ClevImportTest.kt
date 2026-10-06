@@ -47,7 +47,7 @@ class ClevImportTest {
                 "INSERT INTO catelist VALUES (1,'식비','0','001',''),(2,'외식','1','001',''),(51,'과식','0','002',''),(52,'술값','51','001',''),(60,'저축','0','003',''),(61,'예금/적금','60','001','')",
                 "INSERT INTO ecatelist VALUES (1,'근로소득','002','0',''),(2,'급여','001','1',''),(9,'용돈','001','0','')",
                 "INSERT INTO cardlist VALUES (1,'카카오뱅크','KR/B/KAB','','','00002'),(11,'토스머니','KR/B/TSP','','','00007'),(16,'삼성카드','KR/C/SSC','','','09999'),(19,'KB국민체크카드','KR/C/KBD','','','09999'),(15,'친구랑 반반','','','','00011')",
-                "INSERT INTO spendinglist VALUES (1,'2026-10-02','19:30','(주)데일리샷','','19','51','52','39900','1','x',''),(2,'2026-10-01','12:00','우리할매','','16','1','2','10000','3','',''),(3,'2026-09-30','12:00','우리할매','','16','1','2','9000','1','',''),(4,'2026-09-29','08:00','편의점','','0','0','0','0','8946','','')",
+                "INSERT INTO spendinglist VALUES (1,'2026-10-02','19:30','(주)데일리샷','USD 28.69','19','51','52','39900','1','x',''),(2,'2026-10-01','12:00','우리할매','','16','1','2','10000','3','',''),(3,'2026-09-30','12:00','우리할매','얼만지 기억 안 남','16','1','2','9000','1','',''),(4,'2026-09-29','08:00','편의점','','0','0','0','0','8946','','')",
                 "INSERT INTO spendinglist VALUES (10,'2026-01-05','11:19','데이터산업진흥원','','16','1','2','16668','3','',''),(11,'2026-02-50','02:03','데이터산업진흥원','','16','1','2','16666','1010','',''),(12,'2026-03-50','03:03','데이터산업진흥원','','16','1','2','16666','1010','',''),(20,'2026-10-03','09:00','적금 자동이체','','1','60','61','300000','1','','')",
                 "INSERT INTO earninglist VALUES (1,'2026-09-25','회사','','1','3200000','09:00','1','2','',''),(2,'2026-09-28','K-패스 환급금 입금','','0','35100','09:28','11','0','','')",
             ).forEach(db::execSQL)
@@ -91,6 +91,9 @@ class ClevImportTest {
         assertEquals(LocalDateTime.of(2026, 10, 2, 19, 30).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli(), wine.occurredAt)
         assertEquals(3, txs.getValue("우리할매10000").installmentMonths)
         assertEquals(0, txs.getValue("우리할매9000").installmentMonths) // "1" = 일시불
+        // the old 메모 stays the 메모, a foreign amount in it becomes the 외화; the 품명 is left to the app
+        assertEquals(Triple("", "얼만지 기억 안 남", null), txs.getValue("우리할매9000").let { Triple(it.memo, it.note, it.originalAmount) })
+        assertEquals(Triple("", "", "USD 28.69"), Triple(wine.memo, wine.note, wine.originalAmount))
         assertNull(txs.getValue("편의점0").paymentMethodId) // card "0" = none
         assertNull(txs.getValue("편의점0").categoryId)
         assertEquals(0, txs.getValue("편의점0").installmentMonths) // garbage month value

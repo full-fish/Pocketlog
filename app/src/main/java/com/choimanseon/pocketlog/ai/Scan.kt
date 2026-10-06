@@ -13,6 +13,7 @@ import com.choimanseon.pocketlog.auto.Categorizer
 import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.auto.paid
 import com.choimanseon.pocketlog.auto.similar
+import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Rule
 import com.choimanseon.pocketlog.data.RuleKind
@@ -22,7 +23,9 @@ import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.tagsFor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -62,7 +65,17 @@ data class OrderChoice(
     val categories: List<Long?>, // per item
     val total: Long,
     val mergeInto: Tx?,          // existing transaction (e.g. the card SMS) to attach the items to
+    val names: List<String> = emptyList(), // per item, as corrected on the review screen
+    val note: String = "", // 메모
+    val tags: List<Set<Long>> = emptyList(), // per item, as picked on the review screen; missing = the AI's
 )
+
+/** What an existing record already has of a scanned order: decides what the review screen offers for it. */
+enum class Holds {
+    MISSING,     // no items yet, e.g. a card SMS: 품목 넣기
+    NOTHING_NEW, // the same items, categories and tags, or the order has no items: nothing to put in
+    DIFFERENT,   // other items: 품목 바꾸기
+}
 
 val sourceNames = mapOf(
     "coupang" to "쿠팡", "naver" to "네이버", "kurly" to "컬리", "baemin" to "배달의민족", "yogiyo" to "요기요",
@@ -242,7 +255,11 @@ object Scan {
         return app.dao.txAround(from, to).firstOrNull { it.type == TxType.EXPENSE && paid(it) == order.total && similar(it.merchant, order.merchant) }
     }
 
-    private fun splitsFor(order: ScanOrder, cats: List<Long?>, total: Long): List<TxSplit> {
+    /** [order] with the item names fixed on the review screen. */
+    fun named(order: ScanOrder, names: List<String>) =
+        order.copy(items = order.items.mapIndexed { i, it -> it.copy(name = names.getOrNull(i)?.trim()?.ifBlank { null } ?: it.name) })
+
+    fun splitsFor(order: ScanOrder, cats: List<Long?>, total: Long): List<TxSplit> {
         val items = order.items.mapIndexed { i, it -> TxSplit(txId = 0, name = it.name, quantity = it.quantity, amount = it.amount, categoryId = cats.getOrNull(i)) }
         val diff = total - items.sumOf { it.amount }
         if (diff == 0L || items.isEmpty()) return items
@@ -250,49 +267,83 @@ object Scan {
         return items + TxSplit(txId = 0, name = if (order.shippingFee > 0 || order.discount > 0) "배송비·할인" else "기타", amount = diff, categoryId = main)
     }
 
-    /** The AI's tags of [items] that belong to [category]; an item moved to another category on the review screen loses its old ones. */
-    fun tagsFor(category: Long?, items: List<ScanItem>, categories: List<com.choimanseon.pocketlog.data.Category>) =
-        items.flatMap { it.tags }.filter { t -> category != null && categories.any { it.id == t && it.parentId == category } }.distinct()
+    /** The [picked] tags a record of [category] can carry: the category's own and the shared ones. */
+    fun tagsOn(category: Long?, picked: Collection<Long>, categories: List<Category>) =
+        categories.tagsFor(category, TxType.EXPENSE).map { it.id }.filter { it in picked }
+
+    /** One record for the whole order in [category]: each item's tags that fit its own category, then those that fit [category]. */
+    fun orderTags(category: Long?, itemCats: List<Long?>, picks: List<Collection<Long>>, categories: List<Category>) =
+        tagsOn(category, picks.flatMapIndexed { i, p -> tagsOn(itemCats.getOrNull(i), p, categories) }, categories)
+
+    /** Compares [tx] (with its [txSplits] and [txTags]) with what the review screen would put in it: [planned] items and [tags]. */
+    fun holds(tx: Tx, txSplits: List<TxSplit>, txTags: Collection<Long>, planned: List<TxSplit>, tags: Collection<Long>): Holds {
+        fun List<TxSplit>.key() = map { Triple(it.name, it.amount, it.categoryId) }
+        val sameTags = txTags.containsAll(tags)
+        return when {
+            planned.isEmpty() -> Holds.NOTHING_NEW
+            txSplits.isNotEmpty() -> if (txSplits.key() == planned.key() && sameTags) Holds.NOTHING_NEW else Holds.DIFFERENT
+            // one item is kept as the 품명 and the category, not as a list
+            planned.size == 1 && tx.memo.startsWith(planned[0].name) && tx.categoryId == planned[0].categoryId && sameTags -> Holds.NOTHING_NEW
+            else -> Holds.MISSING
+        }
+    }
+
+    private fun itemsMemo(items: List<ScanItem>) = items.firstOrNull()?.name?.let { if (items.size > 1) "$it 외 ${items.size - 1}개" else it }.orEmpty()
 
     suspend fun save(job: ScanJob, result: ScanResult, choices: List<OrderChoice>, separateItems: Boolean) {
         val dao = app.dao
         val cats = dao.categoriesOnce()
         val sourceName = sourceNames[result.sourceApp] ?: "스크린샷"
-        result.orders.zip(choices).forEach { (order, c) ->
+        result.orders.zip(choices).forEach { (scanned, c) ->
             if (!c.include) return@forEach
+            val order = named(scanned, c.names)
+            val picks = order.items.mapIndexed { i, it -> c.tags.getOrNull(i) ?: it.tags.toSet() }
             val splits = splitsFor(order, c.categories, c.total)
             val mainCat = splits.maxByOrNull { it.amount }?.categoryId
             val at = order.date?.atTime(order.time ?: LocalTime.NOON)?.atZone(zone)?.toInstant()?.toEpochMilli() ?: job.createdAt
             val merchant = order.merchant.ifBlank { sourceName }
-            val memo = order.items.firstOrNull()?.name?.let { if (order.items.size > 1) "$it 외 ${order.items.size - 1}개" else it }.orEmpty()
+            val note = c.note.trim()
+            val memo = itemsMemo(order.items) // 품명
             when {
                 c.mergeInto != null -> {
+                    // 품목 넣기 · 바꾸기: amount, date and payment stay; the items, categories and tags of this screen go in
+                    val old = c.mergeInto
+                    val oldSplits = dao.splitsOf(old.id).first()
                     // an installment plan takes no items: month 1 would count the whole order in the stats
-                    val plan = c.mergeInto.installmentMonths > 1
-                    dao.deleteSplits(c.mergeInto.id)
-                    if (splits.size > 1 && !plan) dao.insertSplits(splits.map { it.copy(txId = c.mergeInto.id) })
-                    dao.update(c.mergeInto.copy(scanJobId = job.id, memo = c.mergeInto.memo.ifBlank { memo }, updatedAt = System.currentTimeMillis()))
-                    if (c.mergeInto.categoryId == null) dao.setCategory(c.mergeInto.id, mainCat)
-                    if (dao.tagsOfOnce(c.mergeInto.id).isEmpty()) dao.setTags(c.mergeInto.id, tagsFor(c.mergeInto.categoryId ?: mainCat, order.items, cats))
+                    val plan = old.installmentMonths > 1
+                    dao.deleteSplits(old.id)
+                    if (splits.size > 1 && !plan) dao.insertSplits(splits.map { it.copy(txId = old.id) })
+                    // the 품명 an earlier scan wrote ("세재 외 1개") follows the new items; one the user typed stays
+                    val oldAuto = oldSplits.firstOrNull()?.let { old.memo.startsWith(it.name) } == true
+                    dao.update(old.copy(
+                        scanJobId = job.id, memo = if (old.memo.isBlank() || oldAuto) memo else old.memo,
+                        note = listOf(old.note, note).filter { it.isNotBlank() }.distinct().joinToString("\n"), updatedAt = System.currentTimeMillis(),
+                    ))
+                    if (mainCat != null) dao.setCategory(old.id, mainCat)
+                    val cat = mainCat ?: old.categoryId
+                    dao.setTags(old.id, tagsOn(cat, dao.tagsOfOnce(old.id) + orderTags(cat, c.categories, picks, cats), cats))
                 }
                 separateItems && splits.size > 1 -> splits.forEachIndexed { k, s ->
-                    val id = dao.insert(Tx(amount = s.amount, occurredAt = at, merchant = merchant, memo = s.name, categoryId = s.categoryId,
+                    val id = dao.insert(Tx(amount = s.amount, occurredAt = at, merchant = merchant, memo = s.name, note = note, categoryId = s.categoryId,
                         paymentMethodId = c.payId, source = TxSource.SCREENSHOT, scanJobId = job.id))
-                    dao.setTags(id, tagsFor(s.categoryId, listOfNotNull(order.items.getOrNull(k)), cats))
+                    dao.setTags(id, tagsOn(s.categoryId, picks.getOrNull(k).orEmpty(), cats))
                 }
                 else -> {
                     val id = dao.insertWithSplits(
-                        Tx(amount = c.total, occurredAt = at, merchant = merchant, memo = memo, categoryId = mainCat,
+                        Tx(amount = c.total, occurredAt = at, merchant = merchant, memo = memo, note = note, categoryId = mainCat,
                             paymentMethodId = c.payId, source = TxSource.SCREENSHOT, scanJobId = job.id),
                         if (splits.size > 1) splits else emptyList(),
                     )
-                    dao.setTags(id, tagsFor(mainCat, order.items, cats))
+                    dao.setTags(id, orderTags(mainCat, c.categories, picks, cats))
                 }
             }
-            // learn: corrected item categories become hints for the next scan, the chosen payment becomes the app's default
+            // learn: corrected item categories and tags become hints for the next scan, the chosen payment becomes the app's default
             order.items.forEachIndexed { i, item ->
-                val chosen = c.categories.getOrNull(i)
-                if (chosen != null && chosen != item.categoryId) Categorizer.learn(item.name.split(' ').take(2).joinToString(" "), Pick(chosen))
+                val chosen = c.categories.getOrNull(i) ?: return@forEachIndexed
+                val tags = tagsOn(chosen, picks[i], cats)
+                if (chosen != item.categoryId || tags.toSet() != tagsOn(chosen, item.tags, cats).toSet()) {
+                    Categorizer.learn(item.name.split(' ').take(2).joinToString(" "), Pick(chosen, tags))
+                }
             }
             if (order.paymentHint == null && c.payId != null && result.sourceApp in sourceNames && result.sourceApp !in setOf("bank", "card", "receipt")) {
                 dao.putRule(RuleKind.SOURCE_DEFAULT_PAYMENT, result.sourceApp, c.payId.toString())

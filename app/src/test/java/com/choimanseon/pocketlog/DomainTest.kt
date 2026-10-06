@@ -20,6 +20,8 @@ import com.choimanseon.pocketlog.domain.shift
 import com.choimanseon.pocketlog.domain.trendBuckets
 import com.choimanseon.pocketlog.domain.byTopCategory
 import com.choimanseon.pocketlog.domain.evalExpr
+import com.choimanseon.pocketlog.domain.matchScore
+import com.choimanseon.pocketlog.domain.searchScore
 import com.choimanseon.pocketlog.domain.installmentRows
 import com.choimanseon.pocketlog.domain.monthPeriod
 import com.choimanseon.pocketlog.domain.shortWon
@@ -211,5 +213,19 @@ class DomainTest {
         assertEquals(mapOf(12L to (2L to 0)), moved(12, 4, 2)) // #a2 to B; #a1 keeps sort 0
         assertEquals(2L, moveCategory(rows, 12, 4, 2).single().color) // and takes B's color
         assertEquals(mapOf(12L to (1L to 0), 11L to (1L to 1)), moved(11, 3, 1)) // #a1 after #a2
+    }
+
+    /** 검색: spaces and case ignored, then 초성, letters in order and one letter off rank below an exact match (0). */
+    @Test fun fuzzySearch() {
+        assertEquals(0, matchScore("스타벅스 코리아", "벅스코"))
+        assertEquals(0, matchScore("NETFLIX.COM", "netflix"))
+        assertEquals(1, matchScore("스타벅스", "ㅅㅌㅂ"))
+        assertEquals(2, matchScore("스타벅스", "ㅅㅂ"))
+        assertEquals(2, matchScore("스타벅스코리아", "스벅"))
+        assertEquals(3, matchScore("스타벅스", "스타박스"))
+        assertEquals(null, matchScore("스타벅스", "이마트"))
+        assertEquals(null, matchScore("편의점에서 산 스낵과 커피 그리고 벅", "스벅")) // too far apart
+        // 품목 names count as 품명
+        assertEquals(0, Tx(amount = 1, occurredAt = 0, merchant = "쿠팡").searchScore("세제", listOf("휴지 30롤", "세제 2L")))
     }
 }

@@ -27,7 +27,7 @@ class LauncherTest {
     fun permissionRequestAndFilePickerOpen() {
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("알림 접근 허용하기").performClick()
-        repeat(2) { compose.onNodeWithText("다음").performClick() }
+        repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("시작하기").performClick()
         compose.onNodeWithContentDescription("설정").performClick()
         compose.onNodeWithText("백업 · 복구 · 초기화").performScrollTo().performClick()

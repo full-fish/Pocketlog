@@ -46,8 +46,14 @@ import com.choimanseon.pocketlog.domain.monthPeriod
 import com.choimanseon.pocketlog.domain.num
 import com.choimanseon.pocketlog.domain.shortWon
 import com.choimanseon.pocketlog.domain.toLocalDate
+import com.choimanseon.pocketlog.domain.searchScore
 import com.choimanseon.pocketlog.domain.total
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -292,7 +298,7 @@ private fun Calendar(period: Period, daily: Map<LocalDate, Long>, selected: Loca
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(nav: Nav) {
     var q by rememberSaveable { mutableStateOf("") }
@@ -300,42 +306,93 @@ fun SearchScreen(nav: Nav) {
     var pay by rememberSaveable { mutableStateOf<Long?>(null) }
     var min by rememberSaveable { mutableStateOf("") }
     var max by rememberSaveable { mutableStateOf("") }
+    var from by rememberSaveable { mutableStateOf<LocalDate?>(null) }
+    var to by rememberSaveable { mutableStateOf<LocalDate?>(null) }
+    var noteOnly by rememberSaveable { mutableStateOf(false) }
     var picking by remember { mutableStateOf<String?>(null) }
     val dao = app.dao
+    val zone = ZoneId.systemDefault()
     val cats by rememberFlow(emptyList()) { dao.categories() }
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
-    val results by rememberFlow(emptyList(), q, cat, pay, min, max) { dao.search(q.trim(), cat, pay, min.toLongOrNull(), max.toLongOrNull()) }
+    val rows by rememberFlow(emptyList(), cat, pay, min, max, from, to, noteOnly) {
+        dao.search(
+            cat, pay, min.toLongOrNull(), max.toLongOrNull(),
+            from?.atStartOfDay(zone)?.toInstant()?.toEpochMilli(), to?.plusDays(1)?.atStartOfDay(zone)?.toInstant()?.toEpochMilli(), noteOnly,
+        )
+    }
+    val splits by rememberFlow(emptyList()) { dao.splitsBetween(0, Long.MAX_VALUE) }
+    // the words are matched here, off the main thread: exact ones first, then the similar ones (score > 0)
+    val results by produceState(emptyList<Pair<Tx, Int>>(), rows, splits, q) {
+        value = withContext(Dispatchers.Default) {
+            val items = splits.groupBy({ it.txId }, { it.name })
+            if (q.isBlank()) rows.take(300).map { it to 0 }
+            else rows.mapNotNull { tx -> tx.searchScore(q, items[tx.id].orEmpty())?.let { tx to it } }.sortedBy { it.second }.take(300)
+        }
+    }
+    val exact = results.count { it.second == 0 }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
+    fun short(d: LocalDate) = if (d.year == LocalDate.now().year) "${d.monthValue}.${d.dayOfMonth}" else "${d.year % 100}.${d.monthValue}.${d.dayOfMonth}"
 
     PageScaffold("검색", onBack = nav::pop) {
         OutlinedTextField(
-            value = q, onValueChange = { q = it }, singleLine = true, placeholder = { Text("가맹점, 메모") },
+            value = q, onValueChange = { q = it }, singleLine = true, placeholder = { Text("가맹점, 품명, 메모") },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), shape = RoundedCornerShape(14.dp),
         )
         FlowRow(
             Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically,
         ) {
+            Chip(from?.let { f -> to?.takeIf { it != f }?.let { "${short(f)} ~ ${short(it)}" } ?: short(f) } ?: "기간 전체", selected = from != null) { picking = "date" }
             Chip(cat?.let { catMap[it]?.name } ?: "카테고리 전체", selected = cat != null) { picking = "cat" }
             Chip(pay?.let { payMap[it]?.name } ?: "결제수단 전체", selected = pay != null) { picking = "pay" }
+            Chip("메모 있는 것만", selected = noteOnly) { noteOnly = !noteOnly }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AmountChip(min, { min = it }, "최소 금액")
                 Text("~", color = pal.sub, modifier = Modifier.padding(horizontal = 6.dp))
                 AmountChip(max, { max = it }, "최대 금액")
             }
         }
-        if (q.isBlank() && cat == null && pay == null && min.isBlank() && max.isBlank()) EmptyState(Icons.Rounded.Search, "가맹점이나 메모로 찾아보세요", "전체 기간에서 찾아요")
-        else LazyColumn(Modifier.weight(1f)) {
-            item { Text("${results.size}건", style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
-            items(results, key = { it.id }) { tx ->
+        if (q.isBlank() && cat == null && pay == null && min.isBlank() && max.isBlank() && from == null && !noteOnly) {
+            EmptyState(Icons.Rounded.Search, "가맹점, 품명, 메모로 찾아보세요", "초성(ㅅㅌㅂ)이나 조금 틀린 글자로도 비슷한 내역을 찾아요")
+        } else LazyColumn(Modifier.weight(1f)) {
+            item {
+                Text(
+                    "${exact}건" + if (exact < results.size) " · 비슷한 내역 ${results.size - exact}건" else "",
+                    style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
+            }
+            items(results.take(exact), key = { it.first.id }) { (tx, _) ->
                 TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) }
+            }
+            if (exact < results.size) {
+                item { GroupLabel("비슷한 내역") }
+                items(results.drop(exact), key = { it.first.id }) { (tx, _) ->
+                    TxRow(tx, tx.categoryId?.let { catMap[it] }, payMap, showDate = true) { nav.push(Screen.Detail(tx.id)) }
+                }
             }
         }
     }
     when (picking) {
         "cat" -> CategoryPickerSheet(TxType.EXPENSE, cats, cat, onDismiss = { picking = null }, noneLabel = "카테고리 전체") { cat = it; picking = null }
         "pay" -> PayPickerSheet(pays, pay, onDismiss = { picking = null }, noneLabel = "결제수단 전체") { pay = it; picking = null }
+        "date" -> {
+            // the picker works in UTC days
+            fun utc(d: LocalDate?) = d?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli()
+            fun day(ms: Long?) = ms?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
+            val state = rememberDateRangePickerState(utc(from), utc(to))
+            DatePickerDialog(
+                onDismissRequest = { picking = null },
+                confirmButton = {
+                    TextButton(onClick = {
+                        from = day(state.selectedStartDateMillis)
+                        to = day(state.selectedEndDateMillis) ?: from // one day picked
+                        picking = null
+                    }) { Text("확인") }
+                },
+                dismissButton = { TextButton(onClick = { from = null; to = null; picking = null }) { Text("전체 기간") } },
+            ) { DateRangePicker(state, Modifier.weight(1f)) }
+        }
     }
 }
 

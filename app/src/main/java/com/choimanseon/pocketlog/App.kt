@@ -94,6 +94,7 @@ class Prefs(context: Context) {
     var driveSecret by string("driveSecret", "") // that password, sealed by Vault
     var driveLast by string("driveLast", "") // last Drive backup, ISO local date-time
     var onboarded by bool("onboarded", false)
+    var devMenu by bool("devMenu", false) // 개발자 메뉴 (더미 데이터): tap 버전 ten times to show or hide it
 
     fun shows(b: com.choimanseon.pocketlog.data.Budget) = b.period.name !in budgetHidden.split(',')
 

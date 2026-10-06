@@ -44,6 +44,8 @@ class DummyTest {
         assertTrue(emart.isNotEmpty() && emart.all { tx -> tags[tx.id].orEmpty().any { it.name == "장보기" } })
         assertTrue(tags.values.any { t -> t.size >= 2 && t.all { it.parentId == t[0].parentId } })
         assertTrue(tags.values.any { t -> t.any { cats[it.parentId]?.tagGroup == true } })
+        // a 품명 on many rows, a 메모 on a few: 검색 and "메모 있는 것만" have something to find
+        assertTrue(dummies.count { it.memo.isNotBlank() } > 500 && dummies.count { it.note.isNotBlank() } > 50)
 
         // TODO #52: favorites come along (some repeating), foreign payments keep their amount, a second run replaces the first
         assertEquals(4, dao.favorites().first().count { it.dummy && it.nextAt != null })

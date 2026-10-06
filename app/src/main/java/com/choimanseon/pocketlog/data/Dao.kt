@@ -48,15 +48,17 @@ interface PocketDao {
     @Query("SELECT * FROM Tx WHERE deletedAt IS NULL AND status = 'PENDING_REVIEW' ORDER BY occurredAt DESC")
     fun pendingTx(): Flow<List<Tx>>
 
+    /** 검색's filters; the words are matched in the app (fuzzy, see matchScore). [to] is exclusive. */
     @Query(
         """SELECT * FROM Tx WHERE deletedAt IS NULL
-        AND (:q = '' OR merchant LIKE '%' || :q || '%' OR memo LIKE '%' || :q || '%')
         AND (:min IS NULL OR ABS(amount) >= :min) AND (:max IS NULL OR ABS(amount) <= :max)
         AND (:pay IS NULL OR paymentMethodId = :pay)
         AND (:cat IS NULL OR categoryId = :cat OR id IN (SELECT txId FROM TxSplit WHERE categoryId = :cat))
-        ORDER BY occurredAt DESC LIMIT 300"""
+        AND (:from IS NULL OR occurredAt >= :from) AND (:to IS NULL OR occurredAt < :to)
+        AND (:noteOnly = 0 OR note != '')
+        ORDER BY occurredAt DESC"""
     )
-    fun search(q: String, cat: Long?, pay: Long?, min: Long?, max: Long?): Flow<List<Tx>>
+    fun search(cat: Long?, pay: Long?, min: Long?, max: Long?, from: Long?, to: Long?, noteOnly: Boolean): Flow<List<Tx>>
 
     @Query("SELECT merchant FROM Tx WHERE deletedAt IS NULL AND merchant != '' AND merchant LIKE :prefix || '%' GROUP BY merchant ORDER BY MAX(occurredAt) DESC LIMIT 5")
     suspend fun merchantsLike(prefix: String): List<String>

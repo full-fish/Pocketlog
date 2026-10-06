@@ -114,13 +114,17 @@ object ClevImport {
                 purchase != null || at.second -> n ?: 0
                 else -> 0 // "1" means 일시불
             }
-            val memo = r.getValue("${p}memo").trim().ifBlank {
-                when {
-                    months in 2..36 -> "할부 1/${months}회차"
-                    installment > 0 && k != null -> "할부 $k/${installment}회차"
-                    else -> ""
-                }
+            // the old app's 메모 was typed by hand, so it stays the 메모 (DB 7); a foreign amount kept there becomes the 외화.
+            // The 품명 is what an app writes: 할부 n/m회차, or "환불" that private/clean.py puts on the refunds it moves
+            val written = r.getValue("${p}memo").trim()
+            val foreign = written.takeIf { Regex("""[A-Z]{3} [\d,.]+""").matches(it) }
+            val memo = when {
+                months in 2..36 -> "할부 1/${months}회차"
+                installment > 0 && k != null -> "할부 $k/${installment}회차"
+                written == "환불" -> written
+                else -> ""
             }
+            val note = written.takeUnless { foreign != null || it == "환불" }.orEmpty()
             // a subcategory is now a tag of its category
             val leaf = sub?.takeIf { it in catById } ?: top?.takeIf { it in catById }
             val parent = leaf?.let { catById.getValue(it).parentId }
@@ -134,6 +138,8 @@ object ClevImport {
                 occurredAt = at.first,
                 merchant = r.getValue("${p}where").trim(),
                 memo = memo,
+                note = note,
+                originalAmount = foreign,
                 categoryId = category,
                 paymentMethodId = r.getValue("${p}card").toLongOrNull()?.takeIf { it in payIds },
                 installmentMonths = installment,

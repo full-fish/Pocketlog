@@ -339,6 +339,7 @@ fun TxRow(
         if (tx.type == TxType.TRANSFER) add("${pay?.name ?: "?"} → ${tx.toPaymentMethodId?.let { pays[it]?.name } ?: "?"}")
         else pay?.let { add(it.name) }
         if (tx.memo.isNotBlank()) add(tx.memo)
+        if (tx.note.isNotBlank()) add(tx.note)
     }.joinToString(" · ")
     Row(
         Modifier.fillMaxWidth().background(if (selected) pal.brandSoft else pal.bg)
@@ -378,13 +379,16 @@ fun TxRow(
 @Composable
 fun CategoryPickerSheet(
     type: TxType, categories: List<Category>, selected: Long?, onDismiss: () -> Unit,
-    noneLabel: String = "카테고리 없음", onManage: (() -> Unit)? = null, onPick: (Long?) -> Unit,
+    noneLabel: String = "카테고리 없음", onManage: (() -> Unit)? = null,
+    extra: (@Composable ColumnScope.() -> Unit)? = null, // below the grid, e.g. the tags on the screenshot review screen
+    onPick: (Long?) -> Unit,
 ) {
     val tops = categories.tops(type).filter { !it.hidden }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = pal.bg) {
         Text("카테고리", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         LazyVerticalGrid(
-            columns = GridCells.Fixed(4), modifier = Modifier.heightIn(max = 380.dp),
+            // with something below, three rows and a scroll, so the sheet still fits a small phone
+            columns = GridCells.Fixed(4), modifier = Modifier.heightIn(max = if (extra != null) 288.dp else 380.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         ) {
             items(tops) { c ->
@@ -402,6 +406,7 @@ fun CategoryPickerSheet(
             Spacer(Modifier.weight(1f))
             if (onManage != null) TextButton(onClick = onManage) { Text("카테고리 추가·관리") }
         }
+        extra?.invoke(this)
         Spacer(Modifier.navigationBarsPadding().height(12.dp))
     }
 }
@@ -444,6 +449,7 @@ fun InputDialog(
     keyboard: KeyboardType = KeyboardType.Text,
     password: Boolean = false,
     message: String? = null,
+    singleLine: Boolean = true, // false: a few lines, e.g. a 메모
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
@@ -455,7 +461,7 @@ fun InputDialog(
             Column {
                 if (message != null) Text(message, style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(bottom = 12.dp))
                 OutlinedTextField(
-                    value = value, onValueChange = { value = it }, singleLine = true, placeholder = { Text(hint) },
+                    value = value, onValueChange = { value = it }, singleLine = singleLine, maxLines = if (singleLine) 1 else 5, placeholder = { Text(hint) },
                     keyboardOptions = KeyboardOptions(keyboardType = keyboard),
                     visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 )
@@ -465,6 +471,9 @@ fun InputDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
     )
 }
+
+/** The "+ 메모" chip, or its first line cut short once written. */
+fun noteLabel(note: String) = note.lineSequence().first().let { if (it.isBlank()) "+ 메모" else if (it.length > 14) it.take(14) + "…" else it }
 
 @Composable
 fun ConfirmDialog(title: String, text: String, confirm: String = "확인", danger: Boolean = false, onDismiss: () -> Unit, onConfirm: () -> Unit) {

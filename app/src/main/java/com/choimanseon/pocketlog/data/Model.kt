@@ -26,7 +26,8 @@ data class Tx(
     val originalAmount: String? = null, // foreign amount as shown, e.g. "USD 12.99"
     val occurredAt: Long,
     val merchant: String = "",
-    val memo: String = "",
+    val memo: String = "", // shown as 품명: what was bought, written by the app too (a scan's items, 할부 n/m회차, 결제 취소)
+    @ColumnInfo(defaultValue = "") val note: String = "", // 메모: only the user's own words (DB 7)
     val categoryId: Long? = null,
     val paymentMethodId: Long? = null,
     val toPaymentMethodId: Long? = null,

@@ -90,7 +90,8 @@ fun DetailScreen(id: Long, nav: Nav) {
                 if (t.type == TxType.TRANSFER) InfoRow("받은 곳", t.toPaymentMethodId?.let { payMap[it]?.name } ?: "-")
                 if (t.installmentMonths > 0) InfoRow("할부", "${t.installmentMonths}개월" + if (plan.size > 1) " · 전체 ${num(plan.sumOf { it.amount })}원" else "")
                 t.originalAmount?.let { InfoRow("외화", it) }
-                if (t.memo.isNotBlank()) InfoRow("메모", t.memo)
+                if (t.memo.isNotBlank()) InfoRow("품명", t.memo)
+                if (t.note.isNotBlank()) InfoRow("메모", t.note)
                 InfoRow("기록 방법", if (t.source == TxSource.IMPORT) "똑똑가계부에서 가져옴" else if (t.source == TxSource.DUMMY) "테스트용 더미 데이터" else sourceLabel(t.source)?.let { "$it 자동 기록" } ?: "직접 입력")
             }
             if (splits.isNotEmpty()) {

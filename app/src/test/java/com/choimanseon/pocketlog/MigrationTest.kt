@@ -60,6 +60,16 @@ class MigrationTest {
         assertEquals(Triple("김밥천국", 25, 0), Triple(f.merchant, f.repeatDay, f.sort))
     }
 
+    /** DB 7: a record keeps its 품명 (memo) and gets an empty 메모 (note). */
+    @Test
+    fun recordsGetAnEmptyNote() = runBlocking {
+        val room = open(old(6, "INSERT INTO Tx (type, amount, currency, occurredAt, merchant, memo, installmentMonths, status, source, excludeFromStats, createdAt, updatedAt) " +
+            "VALUES ('EXPENSE', 8000, 'KRW', 0, '김밥천국', '참치김밥', 0, 'CONFIRMED', 'MANUAL', 0, 0, 0)"))
+        val tx = room.dao().txAround(0, Long.MAX_VALUE).single()
+        room.close()
+        assertEquals(Triple("김밥천국", "참치김밥", ""), Triple(tx.merchant, tx.memo, tx.note))
+    }
+
     @Test
     fun subcategoriesBecomeTags() = runBlocking {
         val room = open(

@@ -115,7 +115,8 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
     var type by remember { mutableStateOf(entry.type) }
     var expr by remember { mutableStateOf("") }
     var merchant by remember { mutableStateOf("") }
-    var memo by remember { mutableStateOf("") }
+    var memo by remember { mutableStateOf("") } // 품명
+    var note by remember { mutableStateOf("") } // 메모
     var categoryId by remember { mutableStateOf<Long?>(null) }
     var tags by remember { mutableStateOf(emptySet<Long>()) }
     var payId by remember { mutableStateOf<Long?>(null) }
@@ -127,7 +128,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
     var pickedTags by remember { mutableStateOf(false) }
     var typing by remember { mutableStateOf(false) }
     var suggestions by remember { mutableStateOf(emptyList<String>()) }
-    var picker by remember { mutableStateOf<String?>(null) } // cat | pay | to | date | time | installment | currency
+    var picker by remember { mutableStateOf<String?>(null) } // cat | pay | to | date | time | installment | currency | note
     var addTagTo by remember { mutableStateOf<Category?>(null) }
     // 즐겨찾기 list and a new 즐겨찾기 swap the content of this one sheet (TODO #59): a second sheet on top stayed off-screen
     // on the phone, its invisible scrim closing it at the first tap
@@ -160,6 +161,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             expr = if (src.amount != 0L) abs(src.amount).toString() else ""
             merchant = src.merchant
             memo = src.memo.takeUnless { autoInstallmentMemo.matches(it) }.orEmpty()
+            note = src.note
             categoryId = src.categoryId
             payId = src.paymentMethodId
             toPayId = src.toPaymentMethodId
@@ -213,6 +215,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 occurredAt = at,
                 merchant = merchant.trim(),
                 memo = memo.trim(),
+                note = note.trim(),
                 categoryId = if (type == TxType.TRANSFER) null else categoryId,
                 paymentMethodId = payId,
                 toPaymentMethodId = if (type == TxType.TRANSFER) toPayId else null,
@@ -255,7 +258,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         pickedTags = false
     }
     fun clearForm() {
-        type = TxType.EXPENSE; currency = "KRW"; expr = ""; merchant = ""; memo = ""
+        type = TxType.EXPENSE; currency = "KRW"; expr = ""; merchant = ""; memo = ""; note = ""
         categoryId = null; tags = emptySet(); payId = null; pickedCategory = false; pickedTags = false
     }
     /** Back to the 즐겨찾기 list after adding one from it; the 즐겨찾기 screen's sheet just closes. */
@@ -371,6 +374,8 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 else -> "${date.monthValue}월 ${date.dayOfMonth}일"
             }
             if (!forFavorite) Chip("$dayLabel ${time.format(timeFmt)}", date != today) { picker = "date" }
+            // 메모 apart from the 품명 below; a 즐겨찾기 keeps none
+            if (!forFavorite) Chip(noteLabel(note), note.isNotBlank()) { picker = "note" }
             if (forFavorite && repeat != Repeat.NONE) Chip(repeatLabel(repeat, repeatDay) + " ▾", true) { picker = "repeat" }
         }
         // any number of tags (TODO #27): the category's own on one line, the shared ones on the next, each with "+ 태그"
@@ -386,18 +391,11 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 }
             }
         }
-        Field(memo, { memo = it }, "메모", Modifier.onFocusChanged { if (it.isFocused) typing = false })
+        Field(memo, { memo = it }, "품명", Modifier.onFocusChanged { if (it.isFocused) typing = false })
 
         if (!typing) Keypad(
             dot = foreign,
-            onKey = { k ->
-                expr = when (k) {
-                    "⌫" -> expr.dropLast(1)
-                    "+", "−", "×", "÷" -> if (foreign || expr.isEmpty()) expr else if (expr.last() in "+−×÷") expr.dropLast(1) + k else expr + k
-                    "." -> if ('.' in expr) expr else expr.ifEmpty { "0" } + "."
-                    else -> if (expr.length >= 24 || (expr.isEmpty() && k.startsWith("0"))) expr else expr + k
-                }
-            },
+            onKey = { k -> expr = typeKey(expr, k, foreign) },
             onClear = { expr = "" },
         )
         // a new 즐겨찾기 comes from the + in the 즐겨찾기 list (TODO #51), so the entry sheet keeps one button
@@ -424,6 +422,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             categoryId = it; pickedCategory = true; picker = null
             tags = tags.filter { id -> cats.tagsFor(it, type).any { t -> t.id == id } }.toSet()
         }
+        "note" -> InputDialog("메모", note, singleLine = false, onDismiss = { picker = null }) { note = it; picker = null }
         "pay" -> PayPickerSheet(pays, payId, if (type == TxType.TRANSFER) "보내는 곳" else "결제수단", onDismiss = { picker = null },
             onManage = { picker = null; onDismiss(); nav.push(Screen.PayMethods) }) { payId = it; picker = null }
         "to" -> PayPickerSheet(pays, toPayId, "받는 곳", onDismiss = { picker = null }) { toPayId = it; picker = null }
@@ -509,6 +508,45 @@ private fun Keypad(dot: Boolean, onKey: (String) -> Unit, onClear: () -> Unit) {
             }
         }
     }
+}
+
+/** [expr] after one [Keypad] key: an operator replaces a trailing one; [dot] = a foreign amount, a decimal number without sums. */
+private fun typeKey(expr: String, k: String, dot: Boolean = false) = when (k) {
+    "⌫" -> expr.dropLast(1)
+    "+", "−", "×", "÷" -> if (dot || expr.isEmpty()) expr else if (expr.last() in "+−×÷") expr.dropLast(1) + k else expr + k
+    "." -> if ('.' in expr) expr else expr.ifEmpty { "0" } + "."
+    else -> if (expr.length >= 24 || (expr.isEmpty() && k.startsWith("0"))) expr else expr + k
+}
+
+/**
+ * An amount on the entry sheet's calculator keys, e.g. the total on the screenshot review screen. A digit first starts a new
+ * amount, an operator first works on [initial] ("12,000 + 3,000").
+ */
+@Composable
+fun AmountDialog(title: String, initial: Long, onDismiss: () -> Unit, onConfirm: (Long) -> Unit) {
+    var expr by remember { mutableStateOf(initial.toString()) }
+    var fresh by remember { mutableStateOf(true) }
+    val value = evalExpr(expr)
+    val sum = expr.any { it in "+−×÷" }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    if (expr.isEmpty()) "0원" else prettyExpr(expr) + if (sum) "" else "원",
+                    style = MaterialTheme.typography.headlineMedium, color = if (expr.isEmpty()) pal.faint else pal.text, textAlign = TextAlign.Center, maxLines = 2,
+                )
+                if (sum && value != null) Text("= ${num(value)}원", style = MaterialTheme.typography.titleSmall, color = pal.brand)
+                Keypad(dot = false, onKey = { k ->
+                    expr = typeKey(if (fresh && k[0].isDigit()) "" else expr, k)
+                    fresh = false
+                }, onClear = { expr = ""; fresh = false })
+            }
+        },
+        confirmButton = { TextButton(onClick = { value?.let(onConfirm) }, enabled = value != null && value >= 0) { Text("확인") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } },
+    )
 }
 
 /** "매주 토요일", "매월 25일" */

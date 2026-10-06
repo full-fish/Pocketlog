@@ -430,3 +430,54 @@ fun dailyExpense(txs: List<Tx>): Map<LocalDate, Long> =
     txs.filter { it.countable() && it.type == TxType.EXPENSE }
         .groupBy { it.occurredAt.toLocalDate() }
         .mapValues { (_, v) -> v.sumOf { it.amount } }
+
+// ---------------------------------------------------------------- search
+
+private const val CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+
+/** "스타벅스" → "ㅅㅌㅂㅅ"; other letters stay. */
+fun initials(s: String) = s.map { c -> if (c in '가'..'힣') CHO[(c - '가') / 588] else c }.joinToString("")
+
+/**
+ * How [text] matches a search [query], spaces and case ignored (fuzzy search): 0 = it contains the query; 1 = its 초성 do
+ * ("ㅅㅌㅂ" → 스타벅스); 2 = the query's letters in order, close together ("스벅", "ㅅㅂ" → 스타벅스); 3 = one letter off,
+ * for queries of 3 letters or more ("스타박스" → 스타벅스). null = no match.
+ */
+fun matchScore(text: String, query: String): Int? {
+    val t = text.lowercase().filterNot(Char::isWhitespace)
+    val q = query.lowercase().filterNot(Char::isWhitespace)
+    if (q.isEmpty() || q in t) return 0
+    if (q.all { it in 'ㄱ'..'ㅎ' }) return initials(t).let { if (q in it) 1 else if (inOrder(it, q)) 2 else null }
+    return when {
+        inOrder(t, q) -> 2
+        q.length >= 3 && (q.length - 1..q.length + 1).any { n -> t.windowed(n).any { oneEdit(it, q) } } -> 3
+        else -> null
+    }
+}
+
+/** The best [matchScore] of a record's 가맹점, 품명, 메모 and [items] (the names of its 품목). */
+fun Tx.searchScore(query: String, items: List<String>): Int? =
+    (listOf(merchant, memo, note) + items).mapNotNull { matchScore(it, query) }.minOrNull()
+
+/** [q]'s letters appear in [t] in order within a stretch twice [q]'s length, so far-apart letters of a long text don't count. */
+private fun inOrder(t: String, q: String) = t.indices.any { start ->
+    var j = 0
+    var i = start
+    while (j < q.length && i < t.length && i - start < q.length * 2) { if (t[i] == q[j]) j++; i++ }
+    j == q.length
+}
+
+/** [a] becomes [b] by changing, adding or dropping at most one letter. */
+private fun oneEdit(a: String, b: String): Boolean {
+    if (kotlin.math.abs(a.length - b.length) > 1) return false
+    var i = 0
+    var j = 0
+    var edits = 0
+    while (i < a.length && j < b.length) {
+        if (a[i] == b[j]) { i++; j++; continue }
+        if (++edits > 1) return false
+        if (a.length >= b.length) i++
+        if (a.length <= b.length) j++
+    }
+    return edits + (a.length - i) + (b.length - j) <= 1
+}

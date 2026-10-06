@@ -15,10 +15,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Tx::class, TxSplit::class, Category::class, TxTag::class, PayMethod::class, Budget::class, Rule::class, RawMessage::class, ScanJob::class,
         Favorite::class, Report::class,
     ],
-    version = 6,
+    version = 7,
     // 5: 즐겨찾기 · 반복 기록, AI 월간 리포트, 주 · 연 예산 (new tables and a column with a default, so Room writes it)
     // 6: 즐겨찾기 order and dummy mark
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6)],
+    // 7: Tx.note, the 메모 apart from the 품명 (Tx.memo)
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7)],
 )
 abstract class PocketDb : RoomDatabase() {
     abstract fun dao(): PocketDao

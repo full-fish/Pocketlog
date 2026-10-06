@@ -10,6 +10,7 @@ import kotlin.random.Random
  * 설정 → 더미 데이터 넣기 (TODO #13, #52): five years of made-up spending, income and savings so every screen has something to show,
  * plus 즐겨찾기 (some repeating) and a few 해외 결제. The dummy data put in before is removed first, and nothing is dated after now.
  * Rows follow the TODO #27 table by name: each merchant goes to its category with the matching tags, some with a 공통 태그.
+ * Many have a 품명 (what was bought) and a few a 메모, so 검색 and "메모 있는 것만" have something to find.
  * A category not in the table (renamed or imported) gets a few generic rows, and the existing payment methods are used.
  * Every row is [TxSource.DUMMY], so it can be removed without touching real records.
  */
@@ -19,30 +20,35 @@ object Dummy {
     /**
      * One kind of row under a category: [tags] of that category, one merchant, and with chance [sharedChance] one of
      * the [shared] 공통 태그. A [day] makes it a fixed monthly bill on that day instead of [perMonth] random rows.
+     * Most rows of a kind with [items] get one of them as the 품명.
      */
     private class Kind(
         tags: String, merchants: String, val min: Int, val max: Int, val perMonth: Double = 0.0, val hours: IntRange = 8..21,
-        val day: Int? = null, val round: Int = 100, shared: String = "", val sharedChance: Double = 0.35,
+        val day: Int? = null, val round: Int = 100, shared: String = "", val sharedChance: Double = 0.35, items: String = "",
     ) {
         val tags = tags.items()
         val merchants = merchants.items()
         val shared = shared.items()
+        val items = items.items()
     }
+
+    /** 메모 the way people write them, on about one row in 25. */
+    private val notes = listOf("N빵 받을 것", "회사에 청구하기", "영수증 받아 둠", "할인 쿠폰 씀", "선물용", "다음엔 세일 때 사기")
 
     private const val PAYDAY = 0
 
     private val kinds: Map<String, List<Kind>> = mapOf(
         "식비" to listOf(
-            Kind("외식", "김밥천국,한솥도시락,본죽,맘스터치,서브웨이,국밥집,명동교자,스시로", 7_000, 35_000, 14.0, 11..20, shared = "데이트,친구·모임,가족,회식"),
-            Kind("장보기", "이마트,홈플러스,컬리,노브랜드", 15_000, 90_000, 4.0, 10..20, shared = "가족"),
-            Kind("야식", "배달의민족,쿠팡이츠,요기요", 14_000, 32_000, 4.0, 21..23),
+            Kind("외식", "김밥천국,한솥도시락,본죽,맘스터치,서브웨이,국밥집,명동교자,스시로", 7_000, 35_000, 14.0, 11..20, shared = "데이트,친구·모임,가족,회식", items = "점심,저녁,포장"),
+            Kind("장보기", "이마트,홈플러스,컬리,노브랜드", 15_000, 90_000, 4.0, 10..20, shared = "가족", items = "우유 · 계란,과일,고기,채소,생수"),
+            Kind("야식", "배달의민족,쿠팡이츠,요기요", 14_000, 32_000, 4.0, 21..23, items = "치킨,피자,떡볶이,족발"),
             Kind("야식,외식", "교촌치킨,포장마차,순대국밥", 15_000, 40_000, 1.0, 21..23, shared = "친구·모임"),
         ),
         "카페·간식" to listOf(
-            Kind("커피", "스타벅스,메가MGC커피,이디야커피,투썸플레이스,컴포즈커피", 2_000, 7_000, 10.0, 8..17, shared = "데이트", sharedChance = 0.15),
-            Kind("디저트·빵", "파리바게뜨,뚜레쥬르,설빙", 4_000, 15_000, 3.0, 10..20),
+            Kind("커피", "스타벅스,메가MGC커피,이디야커피,투썸플레이스,컴포즈커피", 2_000, 7_000, 10.0, 8..17, shared = "데이트", sharedChance = 0.15, items = "아메리카노,카페라떼,콜드브루"),
+            Kind("디저트·빵", "파리바게뜨,뚜레쥬르,설빙", 4_000, 15_000, 3.0, 10..20, items = "케이크,식빵,빙수"),
             Kind("과자·간식", "배스킨라빈스,붕어빵,왕타코야끼", 2_000, 12_000, 2.0, 12..21),
-            Kind("편의점", "GS25,CU,세븐일레븐", 1_500, 9_000, 8.0, 7..23),
+            Kind("편의점", "GS25,CU,세븐일레븐", 1_500, 9_000, 8.0, 7..23, items = "삼각김밥,음료,도시락,과자"),
         ),
         "술·유흥" to listOf(
             Kind("술집", "역전할머니맥주,이자카야 하나,포차", 20_000, 90_000, 2.0, 19..23, shared = "친구·모임,회식,데이트", sharedChance = 0.7),
@@ -50,15 +56,15 @@ object Dummy {
             Kind("노래방·놀거리", "코인노래방,볼링장,PC방", 3_000, 25_000, 1.0, 14..23, shared = "친구·모임,데이트"),
         ),
         "쇼핑" to listOf(
-            Kind("옷·신발", "무신사,지그재그,유니클로", 19_000, 129_000, 1.5),
-            Kind("가방·잡화", "29CM,쿠팡", 9_900, 79_000, 0.6),
-            Kind("전자기기", "쿠팡,하이마트", 20_000, 300_000, 0.3),
+            Kind("옷·신발", "무신사,지그재그,유니클로", 19_000, 129_000, 1.5, items = "티셔츠,운동화,청바지,양말"),
+            Kind("가방·잡화", "29CM,쿠팡", 9_900, 79_000, 0.6, items = "백팩,지갑,모자"),
+            Kind("전자기기", "쿠팡,하이마트", 20_000, 300_000, 0.3, items = "이어폰,충전기,키보드,마우스"),
             Kind("가구·인테리어", "오늘의집,이케아", 15_000, 200_000, 0.3),
             Kind("중고거래", "당근마켓,번개장터", 5_000, 80_000, 0.4, round = 1_000),
         ),
         "생활" to listOf(
-            Kind("생필품", "다이소,쿠팡", 3_000, 30_000, 3.0),
-            Kind("주방용품", "다이소,오늘의집", 5_000, 40_000, 0.4),
+            Kind("생필품", "다이소,쿠팡", 3_000, 30_000, 3.0, items = "휴지,세제,칫솔 · 치약,샴푸"),
+            Kind("주방용품", "다이소,오늘의집", 5_000, 40_000, 0.4, items = "프라이팬,밀폐용기"),
             Kind("세탁·청소", "크린토피아,세탁특공대", 5_000, 30_000, 0.8),
             Kind("수리·공구", "숨고,철물점", 10_000, 100_000, 0.1),
             Kind("이사", "짐싸 이사", 300_000, 900_000, 0.02, round = 10_000),
@@ -193,6 +199,8 @@ object Dummy {
                 val shared = k.shared.takeIf { it.isNotEmpty() && random.nextDouble() < k.sharedChance }?.random(random)
                 val tx = Tx(
                     type = c.type, amount = won(k, day), occurredAt = at(day, k.hours), merchant = k.merchants.random(random), categoryId = c.id,
+                    memo = k.items.takeIf { it.isNotEmpty() && random.nextDouble() < 0.6 }?.random(random).orEmpty(),
+                    note = notes.takeIf { random.nextDouble() < 0.04 }?.random(random).orEmpty(),
                     paymentMethodId = pays.random(random).id.takeIf { c.type != TxType.SAVING }, source = TxSource.DUMMY,
                 )
                 if (tx.occurredAt > cutoff) continue

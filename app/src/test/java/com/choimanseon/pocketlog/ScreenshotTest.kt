@@ -3,7 +3,9 @@ package com.choimanseon.pocketlog
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -80,7 +82,12 @@ class ScreenshotTest {
         compose.onNodeWithText("배터리 제한 없음으로 하기").assertExists() // TODO #46
         shot("0-onboarding-3-battery")
         compose.onNodeWithText("다음").performClick()
-        shot("0-onboarding-4")
+        compose.onNodeWithText("동의하고 AI 쓰기").performClick()
+        compose.onNodeWithText("동의했어요").assertExists()
+        assertEquals(true, app.prefs.aiConsent)
+        shot("0-onboarding-4-ai")
+        compose.onNodeWithText("다음").performClick()
+        shot("0-onboarding-5")
         compose.onNodeWithText("시작하기").performClick()
 
         val (scanId, orderId) = runBlocking(Dispatchers.IO) { seedSample() }
@@ -153,6 +160,21 @@ class ScreenshotTest {
 
         compose.runOnUiThread { nav().push(Screen.ScanResult(scanId)) }
         shot("7-scan-review")
+        // a category's tags in the same sheet (TODO: 결과창 태그)
+        compose.onAllNodesWithText("술·유흥")[0].performClick()
+        compose.onNodeWithText("#데이트").performClick()
+        compose.onNodeWithText("완료").performClick()
+        compose.onNodeWithText("술·유흥 #데이트").assertExists()
+        // the total on the calculator keys: an operator goes on from the amount, a digit first starts over
+        compose.onNodeWithText("39,900원").performClick()
+        listOf("+", "1", "000").forEach { compose.onNodeWithText(it).performClick() }
+        compose.onNodeWithText("= 40,900원").assertExists()
+        compose.onNodeWithText("확인").performClick()
+        compose.onNodeWithText("40,900원").performClick()
+        listOf("5", "000").forEach { compose.onNodeWithText(it).performClick() }
+        compose.onNodeWithText("확인").performClick()
+        compose.onNodeWithText("5,000원").assertExists()
+        shot("7b-scan-edited")
         compose.runOnUiThread { nav().pop() }
 
         compose.runOnUiThread { nav().push(Screen.Settings) }
@@ -177,6 +199,11 @@ class ScreenshotTest {
 
         compose.runOnUiThread { nav().push(Screen.Search) }
         shot("8c-search")
+        // fuzzy: "스벅" finds 스타벅스코리아 under 비슷한 내역 (matched off the main thread, so wait for it)
+        compose.onAllNodes(hasSetTextAction())[0].performTextInput("스벅")
+        compose.waitUntil(5000) { compose.onAllNodesWithText("스타벅스코리아").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("비슷한 내역").assertExists()
+        shot("8c-search-fuzzy")
         compose.runOnUiThread { nav().pop() }
 
         compose.runOnUiThread { nav().push(Screen.BudgetEdit) }
@@ -256,6 +283,8 @@ class ScreenshotTest {
             Tx(amount = 23000, occurredAt = at(6, 20, 0), merchant = "교촌치킨", categoryId = cat("식비"), paymentMethodId = samsung, source = TxSource.SMS),
             Tx(type = TxType.SAVING, amount = 500_000, occurredAt = at(5, 9, 0), merchant = "카카오뱅크 적금", categoryId = cat("저축"), paymentMethodId = kakao, source = TxSource.PUSH),
             Tx(amount = 12300, occurredAt = at(2, 19, 43), merchant = "주식회사앨리스프랜즈", categoryId = cat("쇼핑"), paymentMethodId = samsung, source = TxSource.SMS, status = TxStatus.CANCELED),
+            // the Coupang payment alert for the screenshot's second order: the review screen offers 품목 넣기
+            Tx(amount = 12400, occurredAt = at(2, 13, 0), merchant = "쿠팡", categoryId = cat("쇼핑"), paymentMethodId = coupang, source = TxSource.PUSH),
         )
         tagged += mapOf(
             "김밥천국" to listOf("외식"), "스타벅스코리아" to listOf("커피"), "(주)데일리샷" to listOf("홈술"), "ezl 지하철 1건 이용" to listOf("대중교통"),

@@ -83,12 +83,16 @@ import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
 
+private const val DEVELOPER_EMAIL = "manseon94@gmail.com"
+
 @Composable
 fun SettingsScreen(nav: Nav) {
     // read, not just declared: an unread `val v by` subscribes to nothing, so switches stayed put (TODO #54)
     app.prefs.version.collectAsState().value
     val p = app.prefs
     var dialog by remember { mutableStateOf<String?>(null) }
+    var versionTaps by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
     val dummies by rememberFlow(0) { app.dao.dummyCount() }
     PageScaffold("설정", onBack = nav::pop) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -117,15 +121,25 @@ fun SettingsScreen(nav: Nav) {
             ListRow("앱 잠금", if (Pin.isSet) "켜짐" else "꺼짐") { nav.push(Screen.Security) }
             ListRow("백업 · 복구 · 초기화") { nav.push(Screen.Data) }
 
-            if (BuildConfig.DEBUG) {
-                GroupLabel("테스트 (개발용 빌드에만 보여요)")
+            // hidden until 버전 is tapped ten times, like Android's developer options
+            if (p.devMenu) {
+                GroupLabel("개발자 메뉴")
                 ListRow("더미 데이터 넣기", "5년치 가짜 내역과 즐겨찾기를 새로 만들어요. 내역에 '더미' 표시가 붙어요") { dialog = "dummy" }
                 if (dummies > 0) ListRow("더미 데이터 지우기", "더미 ${num(dummies.toLong())}건과 더미 즐겨찾기만 지워요. 진짜 내역은 그대로예요") { dialog = "undummy" }
             }
 
             GroupLabel("정보")
-            ListRow("버전", BuildConfig.VERSION_NAME)
+            ListRow("버전", BuildConfig.VERSION_NAME) {
+                if (++versionTaps < 10) return@ListRow
+                versionTaps = 0
+                p.devMenu = !p.devMenu
+                nav.toast(if (p.devMenu) "개발자 메뉴가 생겼어요" else "개발자 메뉴를 숨겼어요")
+            }
             ListRow("환율", "해외 결제는 그날 환율로 바꿔 적어요 · Rates By Exchange Rate API (open.er-api.com)")
+            ListRow("개발자 연락처", DEVELOPER_EMAIL) {
+                runCatching { context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$DEVELOPER_EMAIL")).putExtra(Intent.EXTRA_SUBJECT, "[Pocketlog] ")) }
+                    .onFailure { nav.toast("메일 앱이 없어요. $DEVELOPER_EMAIL 로 보내 주세요") }
+            }
             Spacer(Modifier.height(24.dp))
         }
     }

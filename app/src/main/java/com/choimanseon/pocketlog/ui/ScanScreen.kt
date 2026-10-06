@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material3.*
@@ -22,11 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.choimanseon.pocketlog.Notify
+import com.choimanseon.pocketlog.ai.Holds
 import com.choimanseon.pocketlog.ai.OrderChoice
 import com.choimanseon.pocketlog.ai.Scan
 import com.choimanseon.pocketlog.ai.ScanOrder
@@ -36,10 +38,13 @@ import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.ScanJob
 import com.choimanseon.pocketlog.data.ScanStatus
+import com.choimanseon.pocketlog.data.Tx
+import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.num
 import com.choimanseon.pocketlog.domain.won
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
@@ -101,39 +106,61 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
     val saved = job.status == ScanStatus.SAVED
+    val n = result.orders.size
 
     val include = remember(job.id) { mutableStateListOf(*result.orders.map { it.active }.toTypedArray()) }
-    val payIds = remember(job.id) { mutableStateListOf<Long?>(*arrayOfNulls(result.orders.size)) }
+    val payIds = remember(job.id) { mutableStateListOf<Long?>(*arrayOfNulls(n)) }
     val totals = remember(job.id) { mutableStateListOf(*result.orders.map { it.total }.toTypedArray()) }
     val itemCats = remember(job.id) { result.orders.map { o -> mutableStateListOf(*o.items.map { it.categoryId }.toTypedArray()) } }
-    val dups = remember(job.id) { mutableStateListOf<com.choimanseon.pocketlog.data.Tx?>(*arrayOfNulls(result.orders.size)) }
-    val dupChoice = remember(job.id) { mutableStateListOf(*Array(result.orders.size) { Dup.MERGE }) }
+    val picks = remember(job.id) { result.orders.map { o -> mutableStateListOf(*o.items.map { it.tags.toSet() }.toTypedArray()) } }
+    val names = remember(job.id) { result.orders.map { o -> mutableStateListOf(*o.items.map { it.name }.toTypedArray()) } }
+    val notes = remember(job.id) { mutableStateListOf(*Array(n) { "" }) }
+    // an existing record for the same payment, with what it already holds
+    val dups = remember(job.id) { mutableStateListOf<Tx?>(*arrayOfNulls(n)) }
+    val dupSplits = remember(job.id) { mutableStateListOf(*Array(n) { emptyList<TxSplit>() }) }
+    val dupTags = remember(job.id) { mutableStateListOf(*Array(n) { emptyList<Long>() }) }
+    val dupChoice = remember(job.id) { mutableStateListOf(*Array(n) { Dup.MERGE }) }
     var separate by remember { mutableStateOf(false) }
     var pickCat by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var pickPay by remember { mutableStateOf<Int?>(null) }
     var editTotal by remember { mutableStateOf<Int?>(null) }
+    var editName by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var editNote by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(job.id) {
         val payList = dao.payMethodsOnce()
         val defaults = dao.rulesOnce(RuleKind.SOURCE_DEFAULT_PAYMENT)
         result.orders.forEachIndexed { i, o ->
             payIds[i] = Scan.suggestPay(o, result.sourceApp, payList, defaults)
-            val dup = if (saved) null else Scan.duplicateOf(o)
+            val dup = (if (saved) null else Scan.duplicateOf(o)) ?: return@forEachIndexed
+            dupSplits[i] = dao.splitsOf(dup.id).first()
+            dupTags[i] = dao.tagsOfOnce(dup.id)
             dups[i] = dup
-            // the same order from an earlier screenshot: skip; from a card SMS: attach the items to it
-            if (dup != null) dupChoice[i] = if (dup.scanJobId != null) Dup.SKIP else Dup.MERGE
+            // a card SMS without the items: put them in; a record with items already (an earlier screenshot): leave it unless asked
+            dupChoice[i] = if (dupSplits[i].isEmpty() && dup.scanJobId == null) Dup.MERGE else Dup.SKIP
         }
     }
 
-    val chosen = result.orders.indices.filter { include[it] && !(dups[it] != null && dupChoice[it] == Dup.SKIP) }
-    val newCount = chosen.count { dups[it] == null || dupChoice[it] == Dup.NEW }
-    val mergeCount = chosen.size - newCount
+    // follows the edits: once the names, categories and tags match the record there is nothing left to put in
+    val holds = result.orders.indices.map { i ->
+        dups[i]?.let { d ->
+            val planned = Scan.splitsFor(Scan.named(result.orders[i], names[i]), itemCats[i], totals[i])
+            val cat = planned.maxByOrNull { it.amount }?.categoryId ?: d.categoryId
+            Scan.holds(d, dupSplits[i], dupTags[i], planned, Scan.orderTags(cat, itemCats[i], picks[i], cats))
+        }
+    }
+    val choice = result.orders.indices.map { i -> if (holds[i] == Holds.NOTHING_NEW && dupChoice[i] == Dup.MERGE) Dup.SKIP else dupChoice[i] }
+    val chosen = result.orders.indices.filter { include[it] && !(dups[it] != null && choice[it] == Dup.SKIP) }
+    val newCount = chosen.count { dups[it] == null || choice[it] == Dup.NEW }
+    val fills = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.MISSING }
+    val swaps = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.DIFFERENT }
 
     LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp)) {
         item {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                Text("${sourceNames[result.sourceApp] ?: "스크린샷"}에서 ${result.orders.size}건을 찾았어요", style = MaterialTheme.typography.titleMedium)
+                Text("${sourceNames[result.sourceApp] ?: "스크린샷"}에서 ${n}건을 찾았어요", style = MaterialTheme.typography.titleMedium)
                 if (saved) Text("이미 저장한 스크린샷이에요", style = MaterialTheme.typography.bodySmall, color = pal.warn)
+                else Text("금액 · 품목 이름 · 카테고리를 누르면 고칠 수 있어요", style = MaterialTheme.typography.bodySmall, color = pal.sub)
                 if (result.warnings.isNotEmpty()) Text(
                     result.warnings.joinToString(" · ") { w -> when (w) {
                         "image_cut_off" -> "화면이 잘려 있어요"
@@ -148,13 +175,15 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
         itemsIndexed(result.orders) { i, o ->
             OrderCard(
                 o, include[i], payIds[i]?.let { payMap[it]?.name }, totals[i], itemCats[i].map { it?.let { id -> catMap[id] } },
-                o.items.mapIndexed { k, item -> Scan.tagsFor(itemCats[i][k], listOf(item), cats).mapNotNull { catMap[it]?.name } },
-                dups[i], dupChoice[i],
+                o.items.indices.map { k -> Scan.tagsOn(itemCats[i][k], picks[i][k], cats).mapNotNull { catMap[it]?.name } },
+                dups[i], dupSplits[i], holds[i], choice[i], names[i], notes[i],
                 onInclude = { include[i] = it },
                 onPay = { pickPay = i },
                 onTotal = { editTotal = i },
                 onItemCategory = { item -> pickCat = i to item },
                 onDup = { dupChoice[i] = it },
+                onItemName = { item -> editName = i to item },
+                onNote = { editNote = i },
             )
         }
         item {
@@ -166,15 +195,17 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
             saved -> "저장 완료"
             chosen.isEmpty() -> "저장할 주문을 골라 주세요"
             else -> "저장하기 · " + listOfNotNull(
-                if (newCount > 0) "새 내역 ${newCount}건 ${won(chosen.filter { dups[it] == null || dupChoice[it] == Dup.NEW }.sumOf { totals[it] })}" else null,
-                if (mergeCount > 0) "품목 연결 ${mergeCount}건" else null,
+                if (newCount > 0) "새 내역 ${newCount}건 ${won(chosen.filter { dups[it] == null || choice[it] == Dup.NEW }.sumOf { totals[it] })}" else null,
+                if (fills > 0) "품목 넣기 ${fills}건" else null,
+                if (swaps > 0) "품목 바꾸기 ${swaps}건" else null,
             ).joinToString(" + ")
         },
         {
             val choices = result.orders.indices.map { i ->
                 OrderChoice(
                     include = i in chosen, payId = payIds[i], categories = itemCats[i].toList(), total = totals[i],
-                    mergeInto = if (dupChoice[i] == Dup.MERGE) dups[i] else null,
+                    mergeInto = if (choice[i] == Dup.MERGE) dups[i] else null,
+                    names = names[i].toList(), note = notes[i], tags = picks[i].toList(),
                 )
             }
             app.scope.launch { Scan.save(job, result, choices, separate) }
@@ -185,17 +216,56 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
         enabled = !saved && chosen.isNotEmpty(),
     )
 
-    pickCat?.let { (o, item) ->
-        CategoryPickerSheet(TxType.EXPENSE, cats, itemCats[o][item], onDismiss = { pickCat = null }) { itemCats[o][item] = it; pickCat = null }
+    pickCat?.let { (o, k) ->
+        // the sheet stays open: a category, then its tags and the shared ones in rows like the entry sheet's, then 완료
+        CategoryPickerSheet(TxType.EXPENSE, cats, itemCats[o][k], onDismiss = { pickCat = null }, extra = {
+            val shared = cats.firstOrNull { it.type == TxType.EXPENSE && it.tagGroup }
+            listOfNotNull(itemCats[o][k]?.let(catMap::get), shared).forEach { owner ->
+                val tags = cats.filter { it.parentId == owner.id && !it.hidden }
+                if (tags.isEmpty()) return@forEach
+                Row(
+                    Modifier.padding(horizontal = 24.dp, vertical = 4.dp).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(if (owner.tagGroup) "공통" else owner.name, style = MaterialTheme.typography.labelSmall, color = pal.sub, modifier = Modifier.widthIn(min = 36.dp))
+                    tags.forEach { t ->
+                        val on = t.id in picks[o][k]
+                        Chip("#${t.name}", on) { picks[o][k] = if (on) picks[o][k] - t.id else picks[o][k] + t.id }
+                    }
+                }
+            }
+            PrimaryButton("완료", { pickCat = null }, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+        }) { id ->
+            itemCats[o][k] = id
+            picks[o][k] = Scan.tagsOn(id, picks[o][k], cats).toSet()
+        }
     }
     pickPay?.let { o ->
         PayPickerSheet(pays, payIds[o], onDismiss = { pickPay = null }) { payIds[o] = it; pickPay = null }
     }
-    editTotal?.let { o ->
-        InputDialog("결제 금액", totals[o].toString(), keyboard = KeyboardType.Number, onDismiss = { editTotal = null }) { v ->
-            v.filter(Char::isDigit).toLongOrNull()?.let { totals[o] = it }
-            editTotal = null
+    editName?.let { (o, item) ->
+        InputDialog("무엇을 샀나요", names[o][item], onDismiss = { editName = null }) { v ->
+            if (v.isNotBlank()) names[o][item] = v.trim()
+            editName = null
         }
+    }
+    editNote?.let { o ->
+        InputDialog("메모", notes[o], singleLine = false, onDismiss = { editNote = null }) { v -> notes[o] = v; editNote = null }
+    }
+    editTotal?.let { o ->
+        AmountDialog("결제 금액", totals[o], onDismiss = { editTotal = null }) { totals[o] = it; editTotal = null }
+    }
+}
+
+/** Looks like the entry sheet's input fields, so a value that can be changed reads as one; choices stay [Chip]s. */
+@Composable
+private fun EditBox(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyMedium) {
+    Row(
+        modifier.clip(RoundedCornerShape(10.dp)).background(pal.bg).clickable(onClick = onClick).padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = style, maxLines = 2, modifier = Modifier.weight(1f, fill = false))
+        Icon(Icons.Rounded.Edit, "고치기", Modifier.padding(start = 4.dp).size(14.dp), tint = pal.faint)
     }
 }
 
@@ -208,13 +278,19 @@ private fun OrderCard(
     total: Long,
     itemCats: List<com.choimanseon.pocketlog.data.Category?>,
     itemTags: List<List<String>>,
-    dup: com.choimanseon.pocketlog.data.Tx?,
+    dup: Tx?,
+    dupSplits: List<TxSplit>,
+    holds: Holds?,
     dupChoice: Dup,
+    names: List<String>,
+    note: String,
     onInclude: (Boolean) -> Unit,
     onPay: () -> Unit,
     onTotal: () -> Unit,
     onItemCategory: (Int) -> Unit,
     onDup: (Dup) -> Unit,
+    onItemName: (Int) -> Unit,
+    onNote: () -> Unit,
 ) {
     PCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).alpha(if (include) 1f else 0.5f), padding = 16.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -226,17 +302,22 @@ private fun OrderCard(
                 )
                 if (!o.active) Text(when (o.status) { "canceled" -> "취소된 주문"; "refunded" -> "환불된 주문"; else -> o.status }, style = MaterialTheme.typography.labelMedium, color = pal.sub)
             }
-            Text(num(total), style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable(onClick = onTotal))
+            EditBox(won(total), onTotal, Modifier.padding(start = 8.dp), MaterialTheme.typography.titleMedium)
         }
         Row(Modifier.padding(top = 4.dp, start = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Chip(payName ?: "결제수단 선택", payName != null, onClick = onPay)
             if (o.paymentHint == null && payName != null) Text("(기본값)", style = MaterialTheme.typography.labelSmall, color = pal.faint, modifier = Modifier.align(Alignment.CenterVertically))
+            Chip(noteLabel(note), note.isNotBlank(), onClick = onNote)
         }
         o.items.forEachIndexed { k, item ->
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(item.name + if (item.quantity > 1) " ×${item.quantity}" else "", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 2)
-                Chip((itemCats.getOrNull(k)?.name ?: "카테고리") + itemTags[k].joinToString("") { " #$it" }, itemCats.getOrNull(k) != null) { onItemCategory(k) }
-                Text(num(item.amount), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp).widthIn(min = 64.dp), textAlign = TextAlign.End)
+                Box(Modifier.weight(1f).padding(end = 6.dp)) {
+                    EditBox(names.getOrElse(k) { item.name } + if (item.quantity > 1) " ×${item.quantity}" else "", { onItemName(k) })
+                }
+                // a long tag list would squeeze the name: the first tag and a count
+                val tags = itemTags[k].firstOrNull()?.let { " #$it" + if (itemTags[k].size > 1) " +${itemTags[k].size - 1}" else "" }.orEmpty()
+                Chip((itemCats.getOrNull(k)?.name ?: "카테고리") + tags, itemCats.getOrNull(k) != null) { onItemCategory(k) }
+                Text(num(item.amount), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp).widthIn(min = 56.dp), textAlign = TextAlign.End)
             }
         }
         if (o.shippingFee > 0 || o.discount > 0) Text(
@@ -245,14 +326,21 @@ private fun OrderCard(
         )
         if (o.mismatch) Text("품목 합계가 결제 금액과 달라요. 금액을 눌러 고칠 수 있어요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 8.dp))
         if (o.confidence < 0.7) Text("잘 안 보이는 부분이 있어요. 한 번 확인해 주세요", style = MaterialTheme.typography.bodySmall, color = pal.warn, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
-        if (dup != null && include) {
+        if (dup != null && holds != null && include) {
             Column(Modifier.padding(start = 12.dp, top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(pal.warn.copy(alpha = 0.1f)).padding(12.dp)) {
                 Text(
-                    "이미 있는 내역과 같아 보여요: ${dup.occurredAt.fmt(java.time.format.DateTimeFormatter.ofPattern("M/d"))} ${dup.merchant} ${num(dup.amount)}원",
+                    "이미 기록된 결제예요: ${dup.occurredAt.fmt(java.time.format.DateTimeFormatter.ofPattern("M/d"))} ${dup.merchant} ${num(dup.amount)}원",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val existing = dupSplits.firstOrNull()?.name?.let { if (dupSplits.size > 1) "$it 외 ${dupSplits.size - 1}개" else it }
+                when (holds) {
+                    Holds.MISSING -> "그 내역에는 무엇을 샀는지가 없어요. 품목 넣기를 고르면 금액 · 날짜 · 결제수단은 그대로 두고, 이 화면의 품목과 카테고리 · 태그를 넣어요."
+                    Holds.DIFFERENT -> "그 내역에는 다른 품목이 들어 있어요(${existing.orEmpty()}). 품목 바꾸기를 고르면 이 화면의 품목과 카테고리 · 태그로 바꿔요."
+                    Holds.NOTHING_NEW -> if (o.items.isEmpty()) null else "품목과 카테고리까지 이미 똑같이 들어 있어서 더 넣을 게 없어요."
+                }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(top = 4.dp)) }
                 FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Chip("품목만 붙이기", dupChoice == Dup.MERGE) { onDup(Dup.MERGE) }
+                    if (holds == Holds.MISSING) Chip("품목 넣기", dupChoice == Dup.MERGE) { onDup(Dup.MERGE) }
+                    if (holds == Holds.DIFFERENT) Chip("품목 바꾸기", dupChoice == Dup.MERGE) { onDup(Dup.MERGE) }
                     Chip("따로 저장", dupChoice == Dup.NEW) { onDup(Dup.NEW) }
                     Chip("건너뛰기", dupChoice == Dup.SKIP) { onDup(Dup.SKIP) }
                 }
