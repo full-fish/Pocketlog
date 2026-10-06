@@ -57,7 +57,8 @@ private val transitWords = Regex("이즐|티머니|캐시비|레일플러스|교
 private val cardWords = Regex("카드")
 // a statement or amount-due notice (청구 · 결제예정 · 이번 달 결제금액 …), from the card company or the bank. A purchase
 // message always shows its time of day; these show only dates ("[삼성카드]10/13결제금액 887,679원 (10/13출금,10/02기준)")
-private val billWords = Regex("""청구|명세서|이용\s*대금|카드\s*대금|결제\s*대금|결제\s*(예정\s*)?금액|결제\s*하?실\s*금액|결제\s*예정|결제일|출금\s*예정""")
+// 청구 only as 청구금액 · 청구액 …: a bank notice has no time either, and "청구아파트" · "청구역" are real payees
+private val billWords = Regex("""청구\s*(금액|액|예정|내역|서)|명세서|이용\s*대금|카드\s*대금|결제\s*대금|결제\s*(예정\s*)?금액|결제\s*하?실\s*금액|결제\s*예정|결제일|출금\s*예정""")
 private val clockTime = Regex("""(?<!\d)\d{1,2}:\d{2}(?!\d)""")
 private val preAuthWords = Regex("가승인|선승인")
 private val savingWords = Regex("적금|청약|정기예금|ISA|IRP|연금저축|증권|투자|펀드")

@@ -201,8 +201,8 @@ class ScreenshotTest {
         shot("8c-search")
         // fuzzy: "스벅" finds 스타벅스코리아 under 비슷한 내역 (matched off the main thread, so wait for it)
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("스벅")
-        compose.waitUntil(5000) { compose.onAllNodesWithText("스타벅스코리아").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("비슷한 내역").assertExists()
+        // 스타벅스코리아 is listed before typing too, so wait for the matching itself
+        compose.waitUntil(5000) { compose.onAllNodesWithText("비슷한 내역", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         shot("8c-search-fuzzy")
         compose.runOnUiThread { nav().pop() }
 

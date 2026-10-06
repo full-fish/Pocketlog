@@ -200,6 +200,13 @@ class AutoInputTest {
     }
 
     @Test
+    fun aPayeeNamed청구IsNotABill() {
+        // a bank notice shows no time, like a statement: only 청구금액 · 청구액 … mark a bill
+        receive("출금 230,000원 청구아파트관리 잔액 770,000원", title = "카카오뱅크", pkg = "com.kakaobank.channel")
+        assertEquals(230_000L, txs().single().amount)
+    }
+
+    @Test
     fun taxiPreAuthorizationIsNotRecordedButTheFareIs() {
         receive("[Web발신]\n삼성1234승인 홍*동\n15,000원 일시불\n$mmdd 카카오T택시_가승인")
         receive("[Web발신]\n삼성1234승인취소 홍*동\n15,000원 일시불\n$mmdd 카카오T택시_가승인", at = post + 600_000)
