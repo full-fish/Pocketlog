@@ -62,6 +62,7 @@ private val clockTime = Regex("""(?<!\d)\d{1,2}:\d{2}(?!\d)""")
 private val preAuthWords = Regex("가승인|선승인")
 private val savingWords = Regex("적금|청약|정기예금|ISA|IRP|연금저축|증권|투자|펀드")
 private val investWords = Regex("증권|투자|펀드|주식|ISA|IRP|연금")
+private val subAccountWords = Regex("세이프박스") // 카카오뱅크 통장 속 칸: 옮겨도 내 통장 안
 
 /**
  * The counterparty of a bank transfer is me. Exact full name only: "한전(최만선)" is a real bill, and masked
@@ -216,6 +217,8 @@ object AutoInput {
         if (preAuthWords.containsMatchIn(p.merchant) || preAuthWords.containsMatchIn(text)) return true
         val bankMove = p.kind == MsgKind.WITHDRAW || p.kind == MsgKind.DEPOSIT
         if (bankMove && isMyName(p.merchant, app.prefs.myName)) return true
+        // a move to or from a box inside my own account (세이프박스) comes as a single notice with no other half
+        if (bankMove && (subAccountWords.containsMatchIn(p.merchant) || subAccountWords.containsMatchIn(text))) return true
         // card bill: the card purchases themselves are already recorded
         if (p.kind == MsgKind.WITHDRAW && (cardWords.containsMatchIn(p.merchant) || "카드대금" in text)) return true
         if (p.kind != MsgKind.CANCEL && p.payKind != PayKind.PAY_MONEY && billWords.containsMatchIn(text) && !clockTime.containsMatchIn(text)) return true
