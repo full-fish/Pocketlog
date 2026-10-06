@@ -180,6 +180,13 @@ class AutoInputTest {
     }
 
     @Test
+    fun safeboxMovesAreNotRecorded() {
+        receive("출금 50,000원 세이프박스 잔액 950,000원", title = "카카오뱅크", pkg = "com.kakaobank.channel")
+        receive("입금 20,000원 세이프박스 잔액 970,000원", title = "카카오뱅크", pkg = "com.kakaobank.channel", at = post + 60_000)
+        assertTrue(txs().isEmpty())
+    }
+
+    @Test
     fun taxiPreAuthorizationIsNotRecordedButTheFareIs() {
         receive("[Web발신]\n삼성1234승인 홍*동\n15,000원 일시불\n$mmdd 카카오T택시_가승인")
         receive("[Web발신]\n삼성1234승인취소 홍*동\n15,000원 일시불\n$mmdd 카카오T택시_가승인", at = post + 600_000)
