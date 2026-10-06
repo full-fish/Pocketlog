@@ -113,12 +113,17 @@ object Scan {
     /**
      * The same screenshot again opens its earlier analysis, with no second AI call. One saved before whose records were
      * all deleted since opens for review again, its images back (TODO #66); one still recorded shows as saved.
+     * Images this phone lost come back too: backups carry the database only, so after a reinstall the thumbnails are empty.
      */
     suspend fun reuse(hash: String, tiles: List<ByteArray>): Long? {
         val old = app.dao.scanByHash(hash) ?: return null
-        if (old.status == ScanStatus.SAVED && app.dao.liveTxOfScan(old.id) == 0) {
+        val reopen = old.status == ScanStatus.SAVED && app.dao.liveTxOfScan(old.id) == 0
+        val lost = imageFiles(old).let { it.isEmpty() || it.any { f -> !f.exists() } }
+        if (reopen || lost) {
             tiles.forEachIndexed { i, bytes -> File(dir(), "${old.id}_$i.jpg").writeBytes(bytes) }
-            app.dao.update(old.copy(status = ScanStatus.DONE, imageCount = tiles.size))
+            val job = old.copy(status = if (reopen) ScanStatus.DONE else old.status, imageCount = tiles.size)
+            app.dao.update(job)
+            if (job.status == ScanStatus.SAVED) shrink(job)
         }
         return old.id
     }

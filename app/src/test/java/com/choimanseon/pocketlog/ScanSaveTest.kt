@@ -131,4 +131,19 @@ class ScanSaveTest {
         assertEquals(job.id, Scan.reuse("same", image))
         assertEquals(ScanStatus.DONE to 1, dao.scanJobOnce(job.id)!!.let { it.status to it.imageCount })
     }
+
+    @Test
+    fun theSameScreenshotBringsBackImagesAReinstallLost() = runBlocking(Dispatchers.IO) {
+        fresh()
+        val job = ScanJob(imageHash = "lost", imageCount = 0, status = ScanStatus.DONE).let { it.copy(id = dao.insert(it)) }
+        Scan.save(job, ScanResult("coupang", listOf(order), emptyList()), listOf(OrderChoice(true, null, listOf(null, null), 15000, null)), false)
+        // restored from a backup: the database says 2 images, the files are not on this phone
+        val saved = dao.scanJobOnce(job.id)!!.copy(imageCount = 2).also { dao.update(it) }
+        Scan.imageFiles(saved).forEach { it.delete() }
+        assertEquals(job.id, Scan.reuse("lost", listOf(byteArrayOf(1, 2, 3), byteArrayOf(4, 5))))
+        val after = dao.scanJobOnce(job.id)!!
+        assertEquals(ScanStatus.SAVED to 2, after.status to after.imageCount)
+        assertEquals(listOf(3L, 2L), Scan.imageFiles(after).map { it.length() })
+        assertEquals(1, dao.txAround(0, Long.MAX_VALUE).size) // still one record
+    }
 }
