@@ -129,8 +129,14 @@ fun DetailScreen(id: Long, nav: Nav) {
             }
             job?.let { j ->
                 SectionHeader("스크린샷")
-                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Scan.imageFiles(j).forEach { Thumb(it, Modifier.width(120.dp).height(220.dp)) }
+                val files = remember(j) { Scan.imageFiles(j).filter { it.exists() } }
+                if (files.isEmpty()) Text(
+                    // backups carry the records only, not the screenshot files
+                    "원본 스샷이 이 휴대폰에 없어요. 백업에는 원본이 들어가지 않아요. 같은 스샷을 다시 넣으면 여기에 다시 보여요.",
+                    style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp),
+                )
+                else Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    files.forEach { Thumb(it, Modifier.width(120.dp).height(220.dp)) }
                 }
             }
             Spacer(Modifier.height(24.dp))
