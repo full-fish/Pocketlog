@@ -91,12 +91,25 @@ private fun prettyExpr(expr: String) = Regex("""\d+|[+−×÷]""").findAll(expr)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EntrySheet(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    // the sheet's own window can report no navigation bar on Galaxy phones, so the activity's inset is passed in too
+    val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    var opened by remember { mutableStateOf(false) }
+    LaunchedEffect(sheetState.currentValue) { if (sheetState.currentValue == SheetValue.Expanded) opened = true }
+    // 저장 closes the sheet with its hide animation: dropping it from composition mid-show left the next one
+    // (수정 again right after) closing as soon as it opened
+    val close: () -> Unit = {
+        if (sheetState.isVisible) scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } else onDismiss()
+    }
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // a dismiss before the sheet ever opened is the stray one above; show it again instead
+        onDismissRequest = { if (opened) onDismiss() else scope.launch { sheetState.show() } },
+        sheetState = sheetState,
         containerColor = pal.bg,
         dragHandle = null,
-    ) { EntryForm(entry, nav, onCamera, onPhotos, onDismiss) }
+        contentWindowInsets = { WindowInsets.navigationBars.union(WindowInsets(bottom = navBar)) },
+    ) { EntryForm(entry, nav, onCamera, onPhotos, close) }
 }
 
 /** The sheet's content, separate so it can be rendered on its own (ScreenshotTest). */
