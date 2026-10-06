@@ -55,8 +55,10 @@ fun blockedBy(rules: List<Rule>, text: String, amount: Long?) = rules.any { r ->
 private val payMoneyWords = Regex("페이|머니|pay", RegexOption.IGNORE_CASE)
 private val transitWords = Regex("이즐|티머니|캐시비|레일플러스|교통카드", RegexOption.IGNORE_CASE) // 교통카드 충전은 교통비
 private val cardWords = Regex("카드")
-// a card's monthly statement ("[삼성카드]10/13결제금액 887,679원 (10/13출금,10/02기준)"), not a purchase
-private val cardBillWords = Regex("""카드대금|결제대금|결제\s*예정\s*금액|청구\s*(예정\s*)?금액|\d{1,2}/\d{1,2}\s*결제\s*금액""")
+// a statement or amount-due notice (청구 · 결제예정 · 이번 달 결제금액 …), from the card company or the bank. A purchase
+// message always shows its time of day; these show only dates ("[삼성카드]10/13결제금액 887,679원 (10/13출금,10/02기준)")
+private val billWords = Regex("""청구|명세서|이용\s*대금|카드\s*대금|결제\s*대금|결제\s*(예정\s*)?금액|결제\s*하?실\s*금액|결제\s*예정|결제일|출금\s*예정""")
+private val clockTime = Regex("""(?<!\d)\d{1,2}:\d{2}(?!\d)""")
 private val preAuthWords = Regex("가승인|선승인")
 private val savingWords = Regex("적금|청약|정기예금|ISA|IRP|연금저축|증권|투자|펀드")
 private val investWords = Regex("증권|투자|펀드|주식|ISA|IRP|연금")
@@ -215,8 +217,8 @@ object AutoInput {
         val bankMove = p.kind == MsgKind.WITHDRAW || p.kind == MsgKind.DEPOSIT
         if (bankMove && isMyName(p.merchant, app.prefs.myName)) return true
         // card bill: the card purchases themselves are already recorded
-        if (p.kind == MsgKind.WITHDRAW && cardWords.containsMatchIn(p.merchant)) return true
-        if (p.kind != MsgKind.CANCEL && cardBillWords.containsMatchIn(text)) return true
+        if (p.kind == MsgKind.WITHDRAW && (cardWords.containsMatchIn(p.merchant) || "카드대금" in text)) return true
+        if (p.kind != MsgKind.CANCEL && p.payKind != PayKind.PAY_MONEY && billWords.containsMatchIn(text) && !clockTime.containsMatchIn(text)) return true
         // pay-money top-up (쿠팡페이, 카카오페이머니 …); topping up a transit card is real spending
         if ((p.kind == MsgKind.WITHDRAW || p.isCharge) && !transitWords.containsMatchIn(p.merchant) &&
             (payMoneyWords.containsMatchIn(p.merchant) || findPayByName(p.merchant, setOf(PayKind.PAY_MONEY)) != null)

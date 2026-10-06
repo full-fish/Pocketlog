@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.choimanseon.pocketlog.data.EmojiToIcon
 import com.choimanseon.pocketlog.data.PocketDb
 import com.choimanseon.pocketlog.data.RuleKind
+import com.choimanseon.pocketlog.data.SplitTags
 import com.choimanseon.pocketlog.data.SubcategoriesToTags
 import com.choimanseon.pocketlog.data.TxType
 import kotlinx.coroutines.flow.first
@@ -41,7 +42,7 @@ class MigrationTest {
         return name
     }
 
-    private fun open(name: String) = Room.databaseBuilder(app, PocketDb::class.java, name).addMigrations(EmojiToIcon, SubcategoriesToTags).build()
+    private fun open(name: String) = Room.databaseBuilder(app, PocketDb::class.java, name).addMigrations(EmojiToIcon, SubcategoriesToTags, SplitTags).build()
 
     @Test
     fun emojiBecomeIconKeys() {
@@ -68,6 +69,19 @@ class MigrationTest {
         val tx = room.dao().txAround(0, Long.MAX_VALUE).single()
         room.close()
         assertEquals(Triple("김밥천국", "참치김밥", ""), Triple(tx.merchant, tx.memo, tx.note))
+    }
+
+    /** DB 8: items saved before keep their category, with no tags of their own (null). */
+    @Test
+    fun itemsGetNoTagsOfTheirOwn() = runBlocking {
+        val room = open(old(7,
+            "INSERT INTO Tx (id, type, amount, currency, occurredAt, merchant, memo, note, installmentMonths, status, source, excludeFromStats, createdAt, updatedAt) " +
+                "VALUES (1, 'EXPENSE', 54600, 'KRW', 0, 'UNIQLO', '', '', 0, 'CONFIRMED', 'SCREENSHOT', 0, 0, 0)",
+            "INSERT INTO TxSplit (txId, name, quantity, amount, categoryId) VALUES (1, 'AIRism', 3, 44700, NULL)",
+        ))
+        val split = room.dao().splitsOf(1).first().single()
+        room.close()
+        assertEquals(Triple("AIRism", 44700L, null), Triple(split.name, split.amount, split.tags))
     }
 
     @Test

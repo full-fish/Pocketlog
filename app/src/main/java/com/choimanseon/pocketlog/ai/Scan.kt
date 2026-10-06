@@ -259,8 +259,11 @@ object Scan {
     fun named(order: ScanOrder, names: List<String>) =
         order.copy(items = order.items.mapIndexed { i, it -> it.copy(name = names.getOrNull(i)?.trim()?.ifBlank { null } ?: it.name) })
 
-    fun splitsFor(order: ScanOrder, cats: List<Long?>, total: Long): List<TxSplit> {
-        val items = order.items.mapIndexed { i, it -> TxSplit(txId = 0, name = it.name, quantity = it.quantity, amount = it.amount, categoryId = cats.getOrNull(i)) }
+    /** [tags]: each item's tags, kept on the item for the tag totals (DB 8). */
+    fun splitsFor(order: ScanOrder, cats: List<Long?>, total: Long, tags: List<Collection<Long>> = emptyList()): List<TxSplit> {
+        val items = order.items.mapIndexed { i, it ->
+            TxSplit(txId = 0, name = it.name, quantity = it.quantity, amount = it.amount, categoryId = cats.getOrNull(i), tags = tags.getOrNull(i)?.joinToString(","))
+        }
         val diff = total - items.sumOf { it.amount }
         if (diff == 0L || items.isEmpty()) return items
         val main = items.maxByOrNull { it.amount }?.categoryId
@@ -298,7 +301,7 @@ object Scan {
             if (!c.include) return@forEach
             val order = named(scanned, c.names)
             val picks = order.items.mapIndexed { i, it -> c.tags.getOrNull(i) ?: it.tags.toSet() }
-            val splits = splitsFor(order, c.categories, c.total)
+            val splits = splitsFor(order, c.categories, c.total, picks.mapIndexed { i, p -> tagsOn(c.categories.getOrNull(i), p, cats) })
             val mainCat = splits.maxByOrNull { it.amount }?.categoryId
             val at = order.date?.atTime(order.time ?: LocalTime.NOON)?.atZone(zone)?.toInstant()?.toEpochMilli() ?: job.createdAt
             val merchant = order.merchant.ifBlank { sourceName }

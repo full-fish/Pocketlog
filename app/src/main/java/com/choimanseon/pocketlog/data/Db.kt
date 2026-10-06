@@ -15,10 +15,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         Tx::class, TxSplit::class, Category::class, TxTag::class, PayMethod::class, Budget::class, Rule::class, RawMessage::class, ScanJob::class,
         Favorite::class, Report::class,
     ],
-    version = 7,
+    version = 8,
     // 5: 즐겨찾기 · 반복 기록, AI 월간 리포트, 주 · 연 예산 (new tables and a column with a default, so Room writes it)
     // 6: 즐겨찾기 order and dummy mark
     // 7: Tx.note, the 메모 apart from the 품명 (Tx.memo)
+    // 8: TxSplit.tags, each item's own tags (SplitTags)
     autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7)],
 )
 abstract class PocketDb : RoomDatabase() {
@@ -26,7 +27,7 @@ abstract class PocketDb : RoomDatabase() {
 
     companion object {
         const val NAME = "pocketlog.db"
-        fun open(context: Context) = Room.databaseBuilder(context, PocketDb::class.java, NAME).addMigrations(EmojiToIcon, SubcategoriesToTags).build()
+        fun open(context: Context) = Room.databaseBuilder(context, PocketDb::class.java, NAME).addMigrations(EmojiToIcon, SubcategoriesToTags, SplitTags).build()
     }
 }
 
@@ -147,4 +148,9 @@ internal val SubcategoriesToTags = object : Migration(3, 4) {
             })
         }
     }
+}
+
+/** DB 8: an order's items keep their own tags, so tag totals count only the items that carry a tag. Older items have none known (null). */
+internal val SplitTags = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) = db.execSQL("ALTER TABLE TxSplit ADD COLUMN tags TEXT")
 }

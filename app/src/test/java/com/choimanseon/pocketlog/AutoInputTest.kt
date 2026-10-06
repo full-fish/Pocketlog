@@ -162,12 +162,15 @@ class AutoInputTest {
     }
 
     @Test
-    fun cardStatementNoticeIsNotRecorded() {
-        // 카카오톡 알림톡 from the card company itself; each purchase already came as its own 승인 message
+    fun cardStatementNoticesAreNotRecorded() {
+        // the card company's own notice of what the month's purchases add up to; each purchase came as its own 승인 message
         receive("[삼성카드]10/13결제금액 887,679원 (10/13출금,10/02기준)\nhttp://q.samsungcard.com/3erCTeE", title = "삼성카드", pkg = "com.kakao.talk")
-        receive("[현대카드] 10월 결제예정금액 412,300원 (10/25 출금예정)", title = "현대카드", pkg = "com.kakao.talk")
+        receive("[Web발신]\n[신한카드] 홍*동님 10월 결제예정금액 512,300원 (10/14 출금예정)", at = post + 60_000)
+        receive("[현대카드] 10월 청구금액 412,300원 결제일 10/25", title = "현대카드", pkg = "com.kakao.talk", at = post + 120_000)
+        receive("[Web발신]\n[KB국민카드] 10월 이용대금 300,000원 10/25 출금", at = post + 180_000)
         assertTrue(txs().isEmpty())
-        receive("[Web발신]\n삼성1234승인 홍*동\n18,600원 일시불\n$mmdd 씨유(CU)한양대사\n누적1,279,281원")
+        // a purchase always shows its time, so it is still recorded
+        receive("[Web발신]\n삼성1234승인 홍*동\n18,600원 일시불\n$mmdd 씨유(CU)한양대사\n누적1,279,281원", at = post + 240_000)
         assertEquals(18_600L, txs().single().amount)
     }
 

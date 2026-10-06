@@ -368,6 +368,35 @@ enum class GroupBy(val label: String) { CATEGORY("카테고리별"), TAG("태그
 
 data class GroupSum(val label: String, val total: Long, val filter: TxFilter)
 
+/** The item's tag ids; empty for a line that is not an item. */
+fun TxSplit.tagIds(): List<Long> = tags?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
+
+/**
+ * What [tx] adds to each of its [tags] (null = 태그 없음). A tag on the whole record counts the whole amount.
+ * In an order whose items keep their own tags (screenshot, DB 8) an item's tag counts that item, with the order's
+ * 배송비·할인 shared by the items in proportion to their price: the items always add up to what was paid.
+ */
+fun tagShares(tx: Tx, parts: List<TxSplit>?, tags: List<Long>): Map<Long?, Long> {
+    if (tags.isEmpty()) return mapOf(null to tx.amount)
+    val items = parts.orEmpty().filter { it.tags != null }
+    val itemSum = items.sumOf { it.amount }
+    if (items.isEmpty() || itemSum <= 0) return buildMap { tags.forEach { put(it, tx.amount) } }
+    // a tag removed from the record later is gone from its items too
+    val itemTags = items.map { s -> s.tagIds().filter { it in tags } }
+    val wholeTags = tags.filter { t -> itemTags.none { t in it } }
+    var left = tx.amount
+    val shares = items.mapIndexed { i, s ->
+        if (i == items.lastIndex) left else Math.round(tx.amount.toDouble() * s.amount / itemSum).also { left -= it }
+    }
+    val sums = LinkedHashMap<Long?, Long>()
+    wholeTags.forEach { sums[it] = tx.amount }
+    items.indices.forEach { i ->
+        itemTags[i].forEach { sums.merge(it, shares[i], Long::plus) }
+        if (itemTags[i].isEmpty() && wholeTags.isEmpty()) sums.merge(null, shares[i], Long::plus)
+    }
+    return sums
+}
+
 private val hourBuckets = listOf("새벽" to 0..5, "아침" to 6..10, "점심" to 11..13, "오후" to 14..17, "저녁" to 18..21, "밤" to 22..23)
 
 /**
@@ -386,7 +415,8 @@ fun groupSums(
         }
         GroupBy.TAG -> {
             val sums = HashMap<Long?, Long>()
-            inBase.forEach { tx -> tags[tx.id].orEmpty().ifEmpty { listOf(null) }.forEach { sums.merge(it, tx.amount, Long::plus) } }
+            val splitsByTx = splits.groupBy { it.txId }
+            inBase.forEach { tx -> tagShares(tx, splitsByTx[tx.id], tags[tx.id].orEmpty()).forEach { (t, v) -> sums.merge(t, v, Long::plus) } }
             sums.map { (id, v) ->
                 val t = id?.let { byId[it] } // the tag's name alone, no category in front (TODO #42)
                 GroupSum(t?.name ?: "태그 없음", v, t?.let { base.copy(tag = it.id) } ?: base.copy(untagged = true))

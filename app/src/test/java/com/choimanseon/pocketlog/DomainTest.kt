@@ -25,6 +25,7 @@ import com.choimanseon.pocketlog.domain.searchScore
 import com.choimanseon.pocketlog.domain.installmentRows
 import com.choimanseon.pocketlog.domain.monthPeriod
 import com.choimanseon.pocketlog.domain.shortWon
+import com.choimanseon.pocketlog.domain.tagShares
 import com.choimanseon.pocketlog.domain.toLocalDate
 import com.choimanseon.pocketlog.domain.total
 import org.junit.Assert.assertEquals
@@ -202,6 +203,23 @@ class DomainTest {
         check(GroupBy.MERCHANT, mapOf("김밥천국" to 8000L, "편의점" to 3000L))
         check(GroupBy.WEEKDAY, mapOf("월요일" to 8000L, "화요일" to 3000L))
         check(GroupBy.HOUR, mapOf("점심 11~14시" to 8000L, "밤 22~24시" to 3000L))
+    }
+
+    /** An order's 5,000원 discount is shared by its items by price, so each item's tag gets what was really paid for it. */
+    @Test fun itemTagsShareTheDiscount() {
+        val order = Tx(id = 1, amount = 54600, occurredAt = 0) // 44,700 + 14,900 − 5,000
+        fun items(a: String?, b: String?) = listOf(
+            TxSplit(txId = 1, name = "AIRism 화이트 ×3", amount = 44700, categoryId = 4, tags = a),
+            TxSplit(txId = 1, name = "AIRism 블랙", amount = 14900, categoryId = 4, tags = b),
+            TxSplit(txId = 1, name = "배송비·할인", amount = -5000, categoryId = 4),
+        )
+        assertEquals(mapOf(21L to 40950L, 22L to 13650L), tagShares(order, items("21", "22"), listOf(21L, 22L)))
+        // a tag on the whole record (#데이트) counts all of it; an item without a tag is then covered by it
+        assertEquals(mapOf(9L to 54600L, 21L to 40950L), tagShares(order, items("21", ""), listOf(21L, 9L)))
+        assertEquals(mapOf(21L to 40950L, null to 13650L), tagShares(order, items("21", ""), listOf(21L)))
+        // items saved before DB 8 have no tags of their own: every tag counts the whole order, as before
+        assertEquals(mapOf(21L to 54600L, 22L to 54600L), tagShares(order, items(null, null), listOf(21L, 22L)))
+        assertEquals(mapOf<Long?, Long>(null to 54600L), tagShares(order, items("21", "22"), emptyList()))
     }
 
     @Test fun dragCategoriesAndTags() {

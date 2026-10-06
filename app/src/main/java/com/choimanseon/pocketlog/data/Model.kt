@@ -55,6 +55,8 @@ data class TxSplit(
     val quantity: Int = 1,
     val amount: Long,
     val categoryId: Long?,
+    /** The item's own tag ids, "3,12" ("" = none). Null for a line that is not an item (배송비·할인) and for items saved before DB 8. */
+    val tags: String? = null,
 )
 
 /**
