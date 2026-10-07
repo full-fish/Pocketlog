@@ -35,6 +35,7 @@ import com.choimanseon.pocketlog.ai.ScanOrder
 import com.choimanseon.pocketlog.ai.ScanResult
 import com.choimanseon.pocketlog.ai.sourceNames
 import com.choimanseon.pocketlog.app
+import com.choimanseon.pocketlog.auto.Categorizer
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.ScanJob
@@ -101,7 +102,11 @@ private enum class Dup { MERGE, NEW, SKIP }
 
 /** An item's tags in rows like the entry sheet's: its category's, then the shared ones (review screen, 내역 → 품목). */
 @Composable
-fun ItemTagRows(cats: List<Category>, category: Long?, picked: Set<Long>, onToggle: (Long) -> Unit) {
+fun ItemTagRows(
+    cats: List<Category>, category: Long?, picked: Set<Long>,
+    pinned: Set<Long> = emptySet(), onHold: ((Category) -> Unit)? = null, // the item's rule (Categorizer.pin)
+    onToggle: (Long) -> Unit,
+) {
     val shared = cats.firstOrNull { it.type == TxType.EXPENSE && it.tagGroup }
     listOfNotNull(cats.firstOrNull { it.id == category }, shared).forEach { owner ->
         val tags = cats.filter { it.parentId == owner.id && !it.hidden }
@@ -111,7 +116,7 @@ fun ItemTagRows(cats: List<Category>, category: Long?, picked: Set<Long>, onTogg
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(if (owner.tagGroup) "공통" else owner.name, style = MaterialTheme.typography.labelSmall, color = pal.sub, modifier = Modifier.widthIn(min = 36.dp))
-            tags.forEach { t -> Chip("#${t.name}", t.id in picked) { onToggle(t.id) } }
+            tags.forEach { t -> Chip("#${t.name}", t.id in picked, pinned = t.id in pinned, onHold = onHold?.let { h -> { h(t) } }) { onToggle(t.id) } }
         }
     }
 }
@@ -144,6 +149,15 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     var editTotal by remember { mutableStateOf<Int?>(null) }
     var editName by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var editNote by remember { mutableStateOf<Int?>(null) }
+    // an item's category and tags are for this scan only; a 0.8 s press pins them as the rule for the item's name
+    val scope = rememberCoroutineScope()
+    val rules by rememberFlow(emptyList()) { dao.rules(RuleKind.CATEGORY) }
+    fun ruleOf(o: Int, k: Int) = Categorizer.fromRules(Scan.itemKey(names[o][k]), rules)?.takeIf { it.category == itemCats[o][k] }
+    fun pin(o: Int, k: Int, tag: Category? = null) {
+        val c = itemCats[o][k] ?: return
+        if (tag != null && tag.parentId == c && tag.id !in picks[o][k]) picks[o][k] = picks[o][k] + tag.id
+        scope.launch { nav.toast(Categorizer.pin(Scan.itemKey(names[o][k]), c, tag)) }
+    }
 
     LaunchedEffect(job.id) {
         val payList = dao.payMethodsOnce()
@@ -199,6 +213,8 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
                 onPay = { pickPay = i },
                 onTotal = { editTotal = i },
                 onItemCategory = { item -> pickCat = i to item },
+                itemPinned = o.items.indices.map { k -> ruleOf(i, k) != null },
+                onItemHold = { k -> pin(i, k) },
                 onDup = { dupChoice[i] = it },
                 onItemName = { item -> editName = i to item },
                 onNote = { editNote = i },
@@ -237,7 +253,9 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     pickCat?.let { (o, k) ->
         // the sheet stays open: a category, then its tags and the shared ones in rows like the entry sheet's, then 완료
         CategoryPickerSheet(TxType.EXPENSE, cats, itemCats[o][k], onDismiss = { pickCat = null }, extra = {
-            ItemTagRows(cats, itemCats[o][k], picks[o][k]) { t -> picks[o][k] = if (t in picks[o][k]) picks[o][k] - t else picks[o][k] + t }
+            ItemTagRows(cats, itemCats[o][k], picks[o][k], ruleOf(o, k)?.tags.orEmpty().toSet(), onHold = { t -> pin(o, k, t) }) { t ->
+                picks[o][k] = if (t in picks[o][k]) picks[o][k] - t else picks[o][k] + t
+            }
             PrimaryButton("완료", { pickCat = null }, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         }) { id ->
             itemCats[o][k] = id
@@ -292,6 +310,8 @@ private fun OrderCard(
     onPay: () -> Unit,
     onTotal: () -> Unit,
     onItemCategory: (Int) -> Unit,
+    itemPinned: List<Boolean>,
+    onItemHold: (Int) -> Unit,
     onDup: (Dup) -> Unit,
     onItemName: (Int) -> Unit,
     onNote: () -> Unit,
@@ -320,7 +340,10 @@ private fun OrderCard(
                 }
                 // a long tag list would squeeze the name: the first tag and a count
                 val tags = itemTags[k].firstOrNull()?.let { " #$it" + if (itemTags[k].size > 1) " +${itemTags[k].size - 1}" else "" }.orEmpty()
-                Chip((itemCats.getOrNull(k)?.name ?: "카테고리") + tags, itemCats.getOrNull(k) != null) { onItemCategory(k) }
+                Chip(
+                    (itemCats.getOrNull(k)?.name ?: "카테고리") + tags, itemCats.getOrNull(k) != null,
+                    pinned = itemPinned.getOrElse(k) { false }, onHold = { onItemHold(k) },
+                ) { onItemCategory(k) }
                 Text(num(item.amount), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp).widthIn(min = 56.dp), textAlign = TextAlign.End)
             }
         }

@@ -96,6 +96,7 @@ fun SettingsScreen(nav: Nav) {
     val dummies by rememberFlow(0) { app.dao.dummyCount() }
     PageScaffold("설정", onBack = nav::pop) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
+            ListRow("사용법", "처음이라면 여기부터 · 화면마다 자세한 설명") { nav.push(Screen.Help) }
             GroupLabel("기본")
             ListRow("카테고리 편집", "지출·수입 카테고리") { nav.push(Screen.Categories) }
             ListRow("결제수단 편집", "카드·계좌·페이머니") { nav.push(Screen.PayMethods) }
@@ -207,7 +208,7 @@ fun AutoInputSettingsScreen(nav: Nav) {
                     p.notifyOnSave = it
                     if (it && Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                SwitchRow("카테고리 자동 분류", "가맹점 이름으로 카테고리를 골라요. 바꾼 카테고리는 기억해요", p.autoCategory) { p.autoCategory = it }
+                SwitchRow("카테고리 자동 분류", "가맹점 이름으로 카테고리를 골라요. 입력할 때 카테고리나 태그를 꾹(0.8초) 누르면 그 가맹점의 규칙으로 기억해요", p.autoCategory) { p.autoCategory = it }
                 ListRow(
                     "내 이름", "이 이름으로 오가는 돈은 내 계좌끼리 옮긴 거라 기록하지 않아요",
                     trailing = {
@@ -242,7 +243,7 @@ fun AutoInputSettingsScreen(nav: Nav) {
             item {
                 GroupLabel("카테고리 규칙 ${catRules.size}개")
                 Text(
-                    "가맹점 이름에 왼쪽 글자가 들어 있으면 그 카테고리로 적어요. 여러 개 걸리면 긴 쪽이 이겨요. 지우면 다음에 고르는 카테고리를 새로 기억해요.",
+                    "가맹점 이름에 왼쪽 글자가 들어 있으면 그 카테고리로 적어요. 여러 개 걸리면 긴 쪽이 이겨요. 입력할 때 카테고리나 태그를 꾹(0.8초) 누르면 여기에 생기고, 다시 꾹 누르거나 여기서 지우면 없어져요.",
                     style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp),
                 )
             }
@@ -670,6 +671,7 @@ fun DataScreen(nav: Nav) {
         else -> e.message ?: "실패했어요"
     }
     var driveBackup by remember { mutableStateOf(false) } // asking the password for a new Drive backup
+    var autoPassword by remember { mutableStateOf<String?>(null) } // 매일 자동 백업 being turned on: "" = first entry, else asking again
     var driveFiles by remember { mutableStateOf<List<Drive.File>?>(null) }
     var driveRestore by remember { mutableStateOf<Drive.File?>(null) } // asking the password for this one
     val pickClev = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -693,12 +695,21 @@ fun DataScreen(nav: Nav) {
         SwitchRow(
             "매일 자동 백업",
             when {
-                p.driveSecret.isEmpty() -> "위 'Google 드라이브에 백업'을 한 번 하면, 그 비밀번호로 하루 한 번 알아서 올려요"
+                !p.driveAuto -> "켜면 Google 계정에 연결하고 백업 비밀번호를 정해요. 그다음부터 하루 한 번 알아서 올려요"
                 p.driveLast.isNotEmpty() -> "마지막 백업 ${java.time.LocalDateTime.parse(p.driveLast).format(java.time.format.DateTimeFormatter.ofPattern("M월 d일 HH:mm"))} · 하루 한 번 올려요"
                 else -> "하루 한 번 올려요"
             },
             p.driveAuto,
-        ) { p.driveAuto = it }
+        ) { on ->
+            // on: the Google account first, then the password the daily backups are locked with; off forgets that password
+            if (!on) { p.driveAuto = false; p.driveSecret = "" }
+            else scope.launch {
+                busy = "Google 계정을 확인하는 중이에요…"
+                val token = runCatching { driveToken() }
+                busy = null
+                token.fold({ if (it == null) nav.toast("Google 계정 연결을 취소했어요") else autoPassword = "" }, { nav.toast(driveError(it)) })
+            }
+        }
         ListRow("Google 드라이브에서 복구", "드라이브에 올린 백업 중 하나를 골라요. 지금 데이터는 그 내용으로 바뀌어요") {
             scope.launch {
                 busy = "Google 드라이브를 확인하는 중이에요…"
@@ -778,13 +789,46 @@ fun DataScreen(nav: Nav) {
         scope.launch {
             busy = "Google 드라이브에 올리는 중이에요…"
             val result = runCatching { driveToken()?.also { withContext(Dispatchers.IO) { Drive.upload(it, Backup.sealed(context, pw)) } } }
-            if (result.getOrNull() != null) {
-                // kept for 매일 자동 백업; the keystore key stays on this phone
-                runCatching { app.prefs.driveSecret = Vault.seal(pw) }
-                app.prefs.driveLast = java.time.LocalDateTime.now().withNano(0).toString()
-            }
+            // 매일 자동 백업 keeps the password it was turned on with
+            if (result.getOrNull() != null) app.prefs.driveLast = java.time.LocalDateTime.now().withNano(0).toString()
             busy = null
             nav.toast(result.fold({ if (it == null) "Google 계정 연결을 취소했어요" else "Google 드라이브에 백업했어요" }, ::driveError))
+        }
+    }
+    autoPassword?.let { first ->
+        key(first) {
+            InputDialog(
+                title = if (first.isEmpty()) "자동 백업 비밀번호 정하기" else "한 번 더 입력해 주세요", hint = "비밀번호", password = true,
+                message = if (first.isEmpty()) "매일 올리는 백업을 이 비밀번호로 잠가요. 복구할 때 필요하고, 잊어버리면 백업을 열 수 없어요." else null,
+                onDismiss = { autoPassword = null },
+            ) { pw ->
+                when {
+                    first.isEmpty() && pw.length < 4 -> nav.toast("비밀번호는 4자 이상으로 정해 주세요")
+                    first.isEmpty() -> autoPassword = pw
+                    pw != first -> { autoPassword = ""; nav.toast("비밀번호가 달라요. 처음부터 다시 정해 주세요") }
+                    else -> {
+                        autoPassword = null
+                        scope.launch {
+                            busy = "첫 백업을 올리는 중이에요…"
+                            // the password is sealed by this phone's keystore (Vault) so the daily job can use it
+                            val result = runCatching {
+                                val secret = Vault.seal(pw)
+                                driveToken()?.also { withContext(Dispatchers.IO) { Drive.upload(it, Backup.sealed(context, pw)) } }?.let { secret }
+                            }
+                            busy = null
+                            result.fold({ secret ->
+                                if (secret == null) nav.toast("Google 계정 연결을 취소했어요")
+                                else {
+                                    app.prefs.driveSecret = secret
+                                    app.prefs.driveLast = java.time.LocalDateTime.now().withNano(0).toString()
+                                    app.prefs.driveAuto = true
+                                    nav.toast("매일 자동 백업을 켰어요. 첫 백업도 올렸어요")
+                                }
+                            }, { nav.toast(driveError(it)) })
+                        }
+                    }
+                }
+            }
         }
     }
     driveFiles?.let { files ->

@@ -90,7 +90,7 @@ class Prefs(context: Context) {
     var budgetLinked by bool("budgetLinked", false) // 주 · 월 · 연 통일: one amount sets the other two (TODO #37)
     var budgetHidden by string("budgetHidden", "") // periods left off 홈 · 자산 and alerts, e.g. "WEEK,YEAR"
     var favoriteSort by string("favoriteSort", "custom") // custom | name | nameDesc | newest | oldest (TODO #47)
-    var driveAuto by bool("driveAuto", true) // 매일 자동 백업 to Google Drive, once a password is kept (TODO #56)
+    var driveAuto by bool("driveAuto", false) // 매일 자동 백업 to Google Drive: off until signed in and its password is set
     var driveSecret by string("driveSecret", "") // that password, sealed by Vault
     var driveLast by string("driveLast", "") // last Drive backup, ISO local date-time
     var onboarded by bool("onboarded", false)

@@ -32,6 +32,7 @@ data class Palette(
     val brandSoft: Color,
     val income: Color,
     val warn: Color,
+    val gold: Color, // a chip pinned as a rule
     val danger: Color,
     val divider: Color,
     val dark: Boolean,
@@ -41,14 +42,14 @@ val LightPalette = Palette(
     bg = Color(0xFFFFFFFF), surface = Color(0xFFF4F5F7), surface2 = Color(0xFFE9EBEF),
     text = Color(0xFF111318), sub = Color(0xFF6B7280), faint = Color(0xFFA0A6B1),
     brand = Color(0xFF4C5BF5), brandSoft = Color(0xFFEDEFFE), income = Color(0xFF12B886),
-    warn = Color(0xFFFF9F1C), danger = Color(0xFFF04452), divider = Color(0xFFEEF0F3), dark = false,
+    warn = Color(0xFFFF9F1C), gold = Color(0xFFF2C230), danger = Color(0xFFF04452), divider = Color(0xFFEEF0F3), dark = false,
 )
 
 val DarkPalette = Palette(
     bg = Color(0xFF0F1115), surface = Color(0xFF1A1D23), surface2 = Color(0xFF252932),
     text = Color(0xFFF2F3F5), sub = Color(0xFF9CA3AF), faint = Color(0xFF6B7280),
     brand = Color(0xFF7C87FF), brandSoft = Color(0xFF23284A), income = Color(0xFF38D9A9),
-    warn = Color(0xFFFFB347), danger = Color(0xFFFF6B76), divider = Color(0xFF23262D), dark = true,
+    warn = Color(0xFFFFB347), gold = Color(0xFFE3B341), danger = Color(0xFFFF6B76), divider = Color(0xFF23262D), dark = true,
 )
 
 val LocalPalette = staticCompositionLocalOf { LightPalette }

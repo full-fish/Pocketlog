@@ -146,7 +146,9 @@ fun OnboardingScreen() {
                 Box(Modifier.padding(3.dp).size(if (i == step) 18.dp else 6.dp, 6.dp).clip(CircleShape).background(if (i == step) pal.brand else pal.surface2))
             }
         }
-        if (step < STEPS - 1) PrimaryButton("다음", { step++ })
+        // automatic recording is the app's point: no 다음 until the notification listener is on
+        val blocked = step == 3 && !listenerOn
+        if (step < STEPS - 1) PrimaryButton(if (blocked) "알림 접근을 허용하면 다음으로 가요" else "다음", { step++ }, enabled = !blocked)
         else PrimaryButton("시작하기", { finish() })
     }
     if (pickDay) ChoiceDialog("한 달 시작일", (1..28).map { "매월 ${it}일" }, startDay - 1, { pickDay = false }) { startDay = it + 1; pickDay = false }

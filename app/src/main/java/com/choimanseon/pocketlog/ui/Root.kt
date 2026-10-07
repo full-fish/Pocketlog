@@ -50,6 +50,7 @@ sealed interface Screen {
     data object Data : Screen
     data object BudgetEdit : Screen
     data object Favorites : Screen
+    data object Help : Screen
     data class Reports(val start: String? = null) : Screen
     data object Review : Screen
     data object Search : Screen
@@ -178,6 +179,7 @@ private fun ScreenContent(screen: Screen, nav: Nav, pickScreenshots: () -> Unit)
         Screen.Data -> DataScreen(nav)
         Screen.BudgetEdit -> BudgetEditScreen(nav)
         Screen.Favorites -> FavoritesScreen(nav)
+        Screen.Help -> HelpScreen(nav)
         is Screen.Reports -> ReportScreen(screen.start, nav)
         Screen.Review -> ReviewScreen(nav)
         Screen.Search -> SearchScreen(nav)

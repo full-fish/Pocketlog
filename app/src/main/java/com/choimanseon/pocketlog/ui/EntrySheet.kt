@@ -51,6 +51,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.choimanseon.pocketlog.ai.Scan
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.AutoInput
 import com.choimanseon.pocketlog.auto.Categorizer
@@ -61,9 +62,11 @@ import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.Favorite
 import com.choimanseon.pocketlog.data.PayKind
 import com.choimanseon.pocketlog.data.RawStatus
+import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.Repeat
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
+import com.choimanseon.pocketlog.data.TxSplit
 import com.choimanseon.pocketlog.data.TxStatus
 import com.choimanseon.pocketlog.data.TxType
 import com.choimanseon.pocketlog.domain.autoInstallmentMemo
@@ -71,6 +74,7 @@ import com.choimanseon.pocketlog.domain.evalExpr
 import com.choimanseon.pocketlog.domain.josa
 import com.choimanseon.pocketlog.domain.label
 import com.choimanseon.pocketlog.domain.num
+import com.choimanseon.pocketlog.domain.tagIds
 import com.choimanseon.pocketlog.domain.tagsFor
 import com.choimanseon.pocketlog.domain.won
 import kotlinx.coroutines.delay
@@ -190,6 +194,10 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
     }
     /** In a foreign currency [expr] is a plain decimal number and the won follows from the day's rate. */
     fun wonAmount(): Long? = if (!foreign) evalExpr(expr) else expr.toDoubleOrNull()?.let { v -> rate?.let { Math.round(v * it) } }
+    // 추가 puts the form aside as one item and clears it for the next; 저장 makes one record of them all, like a
+    // screenshot order. Only a new expense in won: an installment plan or a foreign amount takes no items.
+    var items by remember { mutableStateOf(emptyList<TxSplit>()) }
+    val itemsOn = original == null && !forFavorite && type == TxType.EXPENSE && !foreign
 
     LaunchedEffect(entry) {
         // an installment month opens as its whole purchase: month 1's date, the full price
@@ -231,7 +239,9 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
 
     suspend fun fillFromMerchant(m: String) {
         val last = dao.lastWithMerchant(m)
-        if (!pickedCategory) (last?.categoryId?.let { Pick(it, dao.tagsOfOnce(last.id)) } ?: Categorizer.categorize(m, type))?.let { pick ->
+        // a pinned rule first, then what this merchant got last time, then the dictionary
+        val pinned = if (app.prefs.autoCategory) Categorizer.ruleFor(m, type) else null
+        if (!pickedCategory) (pinned ?: last?.categoryId?.let { Pick(it, dao.tagsOfOnce(last.id)) } ?: Categorizer.categorize(m, type))?.let { pick ->
             categoryId = pick.category
             if (!pickedTags) tags = pick.tags.toSet()
         }
@@ -239,9 +249,48 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
     }
     val scope = rememberCoroutineScope()
 
+    // A pick is for this record only. A 0.8 s press on the category or one of its tags makes it this merchant's rule right
+    // away, and a press on a pinned one takes it off; the pinned chips are filled.
+    val rules by rememberFlow(emptyList()) { dao.rules(RuleKind.CATEGORY) }
+    val rule = remember(merchant, rules) { Categorizer.fromRules(merchant, rules) }
+    fun pin(category: Long?, tag: Category? = null) {
+        if (category == null) return
+        if (tag != null && tag.parentId == category && tag.id !in tags && merchant.isNotBlank()) tags = tags + tag.id // pinning a tag picks it too
+        scope.launch { nav.toast(Categorizer.pin(merchant, category, tag)) }
+    }
+
+    /** The form as one item; null and a toast when it has no amount. */
+    fun formItem(): TxSplit? {
+        val amount = evalExpr(expr)?.takeIf { it > 0 } ?: run { nav.toast("금액을 입력해 주세요"); return null }
+        return TxSplit(txId = 0, name = memo.trim(), amount = amount, categoryId = categoryId, tags = Scan.tagsOn(categoryId, tags, cats).joinToString(","))
+    }
+    fun addItem() {
+        items = items + (formItem() ?: return)
+        expr = ""; memo = ""; tags = emptySet(); installment = 0
+    }
+    /** An item put aside comes back into the form; what the form held goes aside in its place. */
+    fun editItem(i: Int) {
+        val s = items[i]
+        val rest = items.filterIndexed { j, _ -> j != i }
+        items = if (expr.isEmpty()) rest else rest + (formItem() ?: return)
+        expr = s.amount.toString(); memo = s.name; categoryId = s.categoryId; tags = s.tagIds().toSet(); pickedCategory = true; pickedTags = true
+    }
+
     fun save() {
         if (foreign && rate == null) { nav.toast(if (rateFailed) "환율을 받지 못했어요. 인터넷 연결을 확인해 주세요" else "환율을 받는 중이에요. 잠시 뒤 다시 눌러 주세요"); return }
-        val amount = wonAmount() ?: 0L
+        // the form is the last item, unless its amount is empty; one item alone is a plain record
+        val parts = if (items.isEmpty()) emptyList() else items + if (expr.isEmpty()) emptyList() else listOf(formItem() ?: return)
+        val one = parts.singleOrNull()
+        val splits = if (parts.size < 2) emptyList() else parts.map { p -> p.copy(name = p.name.ifBlank { cats.firstOrNull { it.id == p.categoryId }?.name ?: "품목" }) }
+        // like a screenshot order: the biggest item's category, each item's tags that fit it; every item keeps its own
+        val mainCat = if (one != null) one.categoryId else if (splits.isNotEmpty()) splits.maxBy { it.amount }.categoryId else categoryId
+        val recordTags = when {
+            splits.isNotEmpty() -> Scan.orderTags(mainCat, splits.map { it.categoryId }, splits.map { it.tagIds() }, cats)
+            one != null -> one.tagIds()
+            else -> tags
+        }
+        val name = splits.firstOrNull()?.let { "${it.name} 외 ${splits.size - 1}개" } ?: one?.name ?: memo.trim()
+        val amount = if (parts.isEmpty()) wonAmount() ?: 0L else parts.sumOf { it.amount }
         if (amount <= 0) { nav.toast("금액을 입력해 주세요"); return }
         if (type == TxType.TRANSFER && (payId == null || toPayId == null)) { nav.toast("보내는 곳과 받는 곳을 골라 주세요"); return }
         val at = date.atTime(time).atZone(zone).toInstant().toEpochMilli()
@@ -254,9 +303,9 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 amount = if (o != null && o.amount < 0 && (type == TxType.EXPENSE || type == TxType.SAVING)) -amount else amount,
                 occurredAt = at,
                 merchant = merchant.trim(),
-                memo = memo.trim(),
+                memo = name,
                 note = note.trim(),
-                categoryId = if (type == TxType.TRANSFER) null else categoryId,
+                categoryId = if (type == TxType.TRANSFER) null else mainCat,
                 paymentMethodId = payId,
                 toPaymentMethodId = if (type == TxType.TRANSFER) toPayId else null,
                 installmentMonths = if (type == TxType.EXPENSE) installment else 0,
@@ -265,7 +314,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 updatedAt = System.currentTimeMillis(),
             )
             val id = if (o == null) {
-                dao.insertPurchase(tx.copy(id = 0)).also { id ->
+                dao.insertPurchase(tx.copy(id = 0), splits).also { id ->
                     prefill?.rawMessageId?.let { rid -> dao.rawMessage(rid).first()?.let { dao.update(it.copy(status = RawStatus.PARSED, txId = id)) } }
                 }
             } else {
@@ -273,8 +322,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 else dao.update(tx.copy(memo = tx.memo.ifBlank { o.memo.takeIf { autoInstallmentMemo.matches(it) }.orEmpty() }))
                 o.id
             }
-            dao.setTags(id, if (type == TxType.TRANSFER) emptySet() else tags)
-            if ((pickedCategory || pickedTags) && type != TxType.TRANSFER) Categorizer.learn(merchant, categoryId?.let { Pick(it, tags.toList()) })
+            dao.setTags(id, if (type == TxType.TRANSFER) emptySet() else recordTags)
             if (type == TxType.EXPENSE) AutoInput.checkBudget()
         }
         nav.toast(if (o != null) "수정했어요" else "기록했어요")
@@ -344,7 +392,8 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         Row(verticalAlignment = Alignment.CenterVertically) {
             val types = if (type == TxType.TRANSFER) allTypes else allTypes.dropLast(1)
             PillTabs(types.map { it.label }, types.indexOf(type), Modifier.weight(1f)) {
-                if (type != types[it]) { type = types[it]; categoryId = null; tags = emptySet() }
+                if (items.isNotEmpty() && types[it] != TxType.EXPENSE) nav.toast("품목을 담는 중엔 지출만 적을 수 있어요")
+                else if (type != types[it]) { type = types[it]; categoryId = null; tags = emptySet() }
             }
             if (forFavorite && entry.favorite == null) TextButton(onClick = ::leaveFavorite) { Text("취소") }
             // a receipt photo or a screenshot goes through the same AI analysis
@@ -375,10 +424,31 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             )
             else if (expr.any { it in "+−×÷" } && value != null) Text("= ${num(value)}원", style = MaterialTheme.typography.titleSmall, color = pal.brand)
             // 직접 입력 in a foreign currency, converted at the day's rate (TODO #40)
-            if (original == null && !forFavorite && type != TxType.TRANSFER) Text(
+            if (original == null && !forFavorite && type != TxType.TRANSFER && items.isEmpty()) Text(
                 if (foreign) "$currency ▾" else "원화 ▾", style = MaterialTheme.typography.labelMedium, color = pal.sub,
                 modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(50)).clickable { picker = "currency" }.padding(horizontal = 10.dp, vertical = 4.dp),
             )
+        }
+
+        // the items put aside: a tap brings one back into the form, ✕ drops it
+        if (items.isNotEmpty()) {
+            Text(
+                "담은 품목 ${items.size}개 · 합계 ${num(items.sumOf { it.amount } + (evalExpr(expr)?.coerceAtLeast(0) ?: 0))}원",
+                style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(bottom = 6.dp),
+            )
+            Row(Modifier.padding(bottom = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items.forEachIndexed { i, s ->
+                    Row(
+                        Modifier.clip(RoundedCornerShape(50)).background(pal.surface).clickable { editItem(i) }.padding(start = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("${s.name.ifBlank { s.categoryId?.let { catMap[it]?.name } ?: "품목" }} ${num(s.amount)}원", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        IconButton(onClick = { items = items.filterIndexed { j, _ -> j != i } }, Modifier.size(32.dp)) {
+                            Icon(Icons.Rounded.Close, "품목 빼기", Modifier.size(14.dp), tint = pal.faint)
+                        }
+                    }
+                }
+            }
         }
 
         // merchant + suggestions; 즐겨찾기 beside it opens the saved ones (TODO #47)
@@ -401,9 +471,9 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 Chip("보내는 곳: ${payId?.let { payMap[it]?.name } ?: "선택"}", payId != null) { picker = "pay" }
                 Chip("받는 곳: ${toPayId?.let { payMap[it]?.name } ?: "선택"}", toPayId != null) { picker = "to" }
             } else {
-                Chip(cat?.name ?: "카테고리", cat != null) { picker = "cat" }
+                Chip(cat?.name ?: "카테고리", cat != null, pinned = cat != null && rule?.category == cat.id, onHold = { pin(cat?.id) }) { picker = "cat" }
                 Chip(payId?.let { payMap[it]?.name } ?: if (type == TxType.SAVING) "출금 계좌" else "결제수단", payId != null) { picker = "pay" }
-                if (type == TxType.EXPENSE && !forFavorite && payId?.let { payMap[it]?.kind } == PayKind.CREDIT) {
+                if (type == TxType.EXPENSE && !forFavorite && items.isEmpty() && payId?.let { payMap[it]?.kind } == PayKind.CREDIT) {
                     Chip(if (installment == 0) "일시불" else "${installment}개월", installment > 0) { picker = "installment" }
                 }
             }
@@ -425,7 +495,9 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
                 Row(Modifier.padding(bottom = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(if (owner.tagGroup) "공통" else owner.name, style = MaterialTheme.typography.labelSmall, color = pal.sub, modifier = Modifier.widthIn(min = 36.dp))
                     cats.filter { it.parentId == owner.id && !it.hidden }.forEach { t ->
-                        Chip("#${t.name}", t.id in tags) { tags = if (t.id in tags) tags - t.id else tags + t.id; pickedTags = true }
+                        Chip("#${t.name}", t.id in tags, pinned = rule?.category == categoryId && t.id in rule?.tags.orEmpty(), onHold = { pin(categoryId, t) }) {
+                            tags = if (t.id in tags) tags - t.id else tags + t.id; pickedTags = true
+                        }
                     }
                     Chip("+ 태그") { addTagTo = owner }
                 }
@@ -442,6 +514,10 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         if (forFavorite) PrimaryButton(
             (if (repeat == Repeat.NONE) "즐겨찾기" else "반복 기록") + if (favoriteDraft?.id == 0L) " 저장" else " 고치기", ::saveFavorite, Modifier.padding(top = 12.dp),
         )
+        else if (itemsOn) Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SoftButton("추가", ::addItem, Modifier.weight(1f).height(54.dp), color = pal.brand)
+            PrimaryButton("저장하기", ::save, Modifier.weight(3f))
+        }
         else PrimaryButton(if (original != null) "수정하기" else "저장하기", ::save, Modifier.padding(top = 12.dp))
     }
 

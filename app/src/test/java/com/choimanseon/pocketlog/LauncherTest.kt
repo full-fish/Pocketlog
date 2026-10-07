@@ -1,11 +1,15 @@
 package com.choimanseon.pocketlog
 
+import android.content.ComponentName
 import android.content.Intent
+import android.provider.Settings
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.lifecycle.Lifecycle
+import com.choimanseon.pocketlog.auto.AutoInputService
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -27,6 +31,9 @@ class LauncherTest {
     fun permissionRequestAndFilePickerOpen() {
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("알림 접근 허용하기").performClick()
+        // 다음 waits for the notification listener, turned on in the phone's settings and seen when the app comes back
+        Settings.Secure.putString(app.contentResolver, "enabled_notification_listeners", ComponentName(app, AutoInputService::class.java).flattenToString())
+        compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED).moveToState(Lifecycle.State.RESUMED)
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         compose.onNodeWithText("시작하기").performClick()
         compose.onNodeWithContentDescription("설정").performClick()

@@ -62,6 +62,10 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -162,13 +166,24 @@ fun SoftButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
 }
 
 @Composable
-fun Chip(text: String, selected: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun Chip(
+    text: String, selected: Boolean = false, modifier: Modifier = Modifier,
+    pinned: Boolean = false, // remembered as a rule: gold instead of the brand color
+    onHold: (() -> Unit)? = null, // a 0.8 s press, so a tap that lingers doesn't make a rule
+    onClick: () -> Unit,
+) {
     val shape = RoundedCornerShape(50)
-    Box(
-        modifier.clip(shape).background(if (selected) pal.brandSoft else Color.Transparent)
-            .then(if (selected) Modifier else Modifier.border(1.dp, pal.surface2, shape))
-            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
-    ) { Text(text, style = MaterialTheme.typography.labelMedium, color = if (selected) pal.brand else pal.text, maxLines = 1) }
+    val haptic = LocalHapticFeedback.current
+    val config = LocalViewConfiguration.current
+    val slow = remember(config) { object : ViewConfiguration by config { override val longPressTimeoutMillis = 800L } }
+    CompositionLocalProvider(LocalViewConfiguration provides slow) {
+        Box(
+            modifier.clip(shape).background(if (!selected) Color.Transparent else if (pinned) pal.gold else pal.brand)
+                .then(if (selected) Modifier else Modifier.border(1.dp, if (pinned) pal.gold else pal.surface2, shape))
+                .combinedClickable(onLongClick = onHold?.let { { haptic.performHapticFeedback(HapticFeedbackType.LongPress); it() } }, onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+        ) { Text(text, style = MaterialTheme.typography.labelMedium, color = if (!selected) pal.text else if (pinned) Color.Black.copy(alpha = 0.85f) else Color.White, maxLines = 1) }
+    }
 }
 
 /** Segmented pill tabs, e.g. 전체 / 지출 / 수입 / 이체. */

@@ -34,9 +34,15 @@ import com.choimanseon.pocketlog.ui.Nav
 import com.choimanseon.pocketlog.ui.Screen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Rule
+import android.content.ComponentName
+import android.provider.Settings
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.lifecycle.Lifecycle
+import com.choimanseon.pocketlog.auto.AutoInputService
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -78,6 +84,10 @@ class ScreenshotTest {
         shot("0-onboarding-1")
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         shot("0-onboarding-2")
+        // no 다음 before the notification listener is on; turned on in the phone's settings, it shows when the app comes back
+        compose.onNodeWithText("알림 접근을 허용하면 다음으로 가요").assertIsNotEnabled()
+        Settings.Secure.putString(app.contentResolver, "enabled_notification_listeners", ComponentName(app, AutoInputService::class.java).flattenToString())
+        compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED).moveToState(Lifecycle.State.RESUMED)
         compose.onNodeWithText("다음").performClick()
         compose.onNodeWithText("배터리 제한 없음으로 하기").assertExists() // TODO #46
         shot("0-onboarding-3-battery")
@@ -233,6 +243,12 @@ class ScreenshotTest {
         compose.onAllNodesWithText("4,500원")[0].assertExists()
         compose.runOnUiThread { nav().entry = null }
 
+        // 사용법: every part folded, one opened by a tap
+        compose.runOnUiThread { nav().push(Screen.Help) }
+        compose.onNodeWithText("직접 입력 (+ 버튼)").performClick()
+        shot("8f-help")
+        compose.runOnUiThread { nav().pop() }
+
         app.prefs.theme = "dark"
         shot("10-home-dark")
     }
@@ -345,10 +361,21 @@ class EntryScreenshotTest {
             }
         }
         listOf("1", "2", "000", "+", "3", "000").forEach { compose.onNodeWithText(it).performClick() }
+        // 추가 puts the item aside, the next one goes in the cleared form, 저장 makes one record of both
+        compose.onAllNodes(hasSetTextAction())[1].performTextInput("와인")
+        compose.onNodeWithText("추가").performClick()
+        listOf("5", "000").forEach { compose.onNodeWithText(it).performClick() }
         compose.waitForIdle()
         val bmp = compose.onRoot().captureToImage().asAndroidBitmap()
         File("build/screenshots").mkdirs()
         File("build/screenshots/9-entry-form.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        compose.onNodeWithText("저장하기").performClick()
+        runBlocking(Dispatchers.IO) {
+            var tx: com.choimanseon.pocketlog.data.Tx? = null
+            while (tx == null) { delay(20); tx = app.dao.txAround(0, Long.MAX_VALUE).firstOrNull() }
+            assertEquals(20000L to "와인 외 1개", tx.amount to tx.memo)
+            assertEquals(listOf("와인" to 15000L, "품목" to 5000L), app.dao.splitsOf(tx.id).first().map { it.name to it.amount })
+        }
     }
 }
 

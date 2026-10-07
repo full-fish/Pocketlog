@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -97,6 +99,21 @@ class ScanSaveTest {
         assertEquals(fixed, dao.splitsOf(sms).first().map { it.name })
         assertEquals("휴지 30롤 3겹 외 1개" to "이사", tx.memo to tx.note)
         assertEquals(listOf(family), dao.tagsOfOnce(sms))
+    }
+
+    @Test
+    fun aLongScreenshotGoesInPartsOfEight() {
+        // a part shares its first tile with the one before: 9 tiles = 0..7 and 7..8
+        assertEquals(listOf(listOf(0, 7), listOf(7, 8)), Scan.batches((0 until 9).toList()).map { listOf(it.first(), it.last()) })
+        assertEquals(listOf(8, 8, 2), Scan.batches((0 until 16).toList()).map { it.size })
+        assertEquals(listOf(1), Scan.batches(listOf(0)).map { it.size })
+        fun part(app: String, vararg totals: Long) = JSONObject().put("source_app", app).put("warnings", JSONArray(listOf("blurry"))).put(
+            "transactions", JSONArray(totals.map { JSONObject().put("date", "2026-10-05").put("merchant", "쿠팡").put("total_amount", it) }),
+        )
+        val joined = Scan.parse(Scan.join(listOf(part("coupang", 15000, 9900), part("other", 9900, 3000)), cut = true).toString())
+        assertEquals(listOf(15000L, 9900L, 3000L), joined.orders.map { it.total }) // the order on the shared tile counts once
+        assertEquals("coupang", joined.sourceApp)
+        assertEquals(listOf("blurry", "너무 길어서 앞의 40조각까지만 읽었어요"), joined.warnings)
     }
 
     @Test

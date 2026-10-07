@@ -10,7 +10,6 @@ import android.os.Build
 import com.choimanseon.pocketlog.Notify
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.Categorizer
-import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.auto.paid
 import com.choimanseon.pocketlog.auto.similar
 import com.choimanseon.pocketlog.data.Category
@@ -29,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -88,7 +88,8 @@ object Scan {
     // longest edge the model reads at full resolution. Measured 2026-10-05 (TODO.md #32): 1600px saves 0.2원 a shot on Luna and
     // no time, 768px misreads small text, so screenshots go at full size
     private const val MAX_EDGE = 2576
-    private const val MAX_TILES = 8
+    private const val MAX_TILES = 8 // images in one request (server/src/index.ts)
+    private const val MAX_PARTS = 40 // tiles of one scan, sent [MAX_TILES] at a time
     private const val KEPT_EDGE = 960 // after saving, a screenshot is only a thumbnail on the detail screen
     private val zone get() = ZoneId.systemDefault()
 
@@ -100,7 +101,7 @@ object Scan {
 
     /** Copies the images right away (shared URIs can expire), then calls the AI in the app scope. */
     suspend fun start(context: Context, uris: List<Uri>): Long = withContext(Dispatchers.IO) {
-        val tiles = uris.flatMap { runCatching { tiles(context, it) }.getOrDefault(emptyList()) }.take(MAX_TILES)
+        val tiles = uris.flatMap { runCatching { tiles(context, it) }.getOrDefault(emptyList()) }.take(MAX_PARTS)
         require(tiles.isNotEmpty()) { "이미지를 읽을 수 없어요" }
         val hash = MessageDigest.getInstance("SHA-256").run { tiles.forEach { update(it) }; digest() }.joinToString("") { "%02x".format(it) }
         reuse(hash, tiles)?.let { return@withContext it }
@@ -134,10 +135,13 @@ object Scan {
         dao.update(job.copy(status = ScanStatus.RUNNING, error = null))
         val result = runCatching {
             if (!Ai.configured) throw AiError(0, "AI 서버가 아직 설정되지 않았어요 (server/README.md)")
-            Ai.scan(imageFiles(job).map { it.readBytes() }, dao.categoriesOnce(), dao.rulesOnce(RuleKind.CATEGORY))
+            val cats = dao.categoriesOnce()
+            val rules = dao.rulesOnce(RuleKind.CATEGORY)
+            val parts = batches(imageFiles(job).map { it.readBytes() }).map { Ai.scan(it, cats, rules).let { r -> r.optJSONObject("result") ?: r } }
+            join(parts, cut = job.imageCount >= MAX_PARTS)
         }
         val done = result.fold(
-            onSuccess = { job.copy(status = ScanStatus.DONE, resultJson = (it.optJSONObject("result") ?: it).toString()) },
+            onSuccess = { job.copy(status = ScanStatus.DONE, resultJson = it.toString()) },
             onFailure = { job.copy(status = ScanStatus.FAILED, error = friendly(it)) },
         )
         dao.update(done)
@@ -148,6 +152,30 @@ object Scan {
             found > 0 -> Notify.scan(id, "스크린샷 분석이 끝났어요", "결제 ${found}건을 찾았어요. 눌러서 확인하고 저장해 주세요")
             else -> Notify.scan(id, "스크린샷 분석이 끝났어요", "결제 내역을 찾지 못했어요")
         }
+    }
+
+    /** More tiles than one request takes go in parts that share a tile, so an order cut at a seam is whole in one of them. */
+    fun <T> batches(tiles: List<T>) = tiles.windowed(MAX_TILES, MAX_TILES - 1, partialWindows = true).filterIndexed { i, w -> i == 0 || w.size > 1 }
+
+    /** The results of a scan's parts as one: an order read in two parts (on the shared tile) counts once. */
+    fun join(parts: List<JSONObject>, cut: Boolean = false): JSONObject {
+        if (parts.size == 1 && !cut) return parts[0]
+        val seen = HashSet<String>()
+        val orders = JSONArray()
+        val warnings = LinkedHashSet<String>()
+        parts.forEach { p ->
+            val ts = p.optJSONArray("transactions") ?: JSONArray()
+            for (i in 0 until ts.length()) ts.getJSONObject(i).let { t ->
+                if (seen.add("${t.optString("date")}|${t.optString("merchant")}|${t.optLong("total_amount")}")) orders.put(t)
+            }
+            val ws = p.optJSONArray("warnings") ?: JSONArray()
+            for (i in 0 until ws.length()) warnings += ws.getString(i)
+        }
+        if (cut) warnings += "너무 길어서 앞의 ${MAX_PARTS}조각까지만 읽었어요"
+        return JSONObject()
+            .put("source_app", parts.map { it.optString("source_app", "other") }.firstOrNull { it != "other" } ?: "other")
+            .put("warnings", JSONArray(warnings.toList()))
+            .put("transactions", orders)
     }
 
     private fun friendly(e: Throwable): String = when {
@@ -172,7 +200,7 @@ object Scan {
             val tileH = if (h <= w * 2.2) h else w * 2
             val out = mutableListOf<ByteArray>()
             var top = 0
-            while (out.size < MAX_TILES) {
+            while (out.size < MAX_PARTS) {
                 val bottom = minOf(h, top + tileH)
                 var sample = 1
                 while (maxOf(w, bottom - top) / (sample * 2) >= MAX_EDGE) sample *= 2
@@ -319,6 +347,9 @@ object Scan {
         dao.replaceItems(txId, edited, (own + tagsOn(tx.categoryId, edited.flatMap { it.tagIds() }, cats)).distinct())
     }
 
+    /** What a pinned item category is remembered by: its name's first two words ("휴지 30롤 3겹" → "휴지 30롤"). */
+    fun itemKey(name: String) = name.split(' ').take(2).joinToString(" ")
+
     /** The line [splitsFor] adds when the items don't add up to what was paid; not an item. */
     fun adjustment(splits: List<TxSplit>) = splits.lastOrNull()?.takeIf { it.tags == null && it.name in setOf("배송비·할인", "기타") }
 
@@ -384,14 +415,7 @@ object Scan {
                     dao.setTags(id, orderTags(mainCat, c.categories, picks, cats))
                 }
             }
-            // learn: corrected item categories and tags become hints for the next scan, the chosen payment becomes the app's default
-            order.items.forEachIndexed { i, item ->
-                val chosen = c.categories.getOrNull(i) ?: return@forEachIndexed
-                val tags = tagsOn(chosen, picks[i], cats)
-                if (chosen != item.categoryId || tags.toSet() != tagsOn(chosen, item.tags, cats).toSet()) {
-                    Categorizer.learn(item.name.split(' ').take(2).joinToString(" "), Pick(chosen, tags))
-                }
-            }
+            // the chosen payment becomes the app's default; item categories become rules only when pinned (Categorizer.pin)
             if (order.paymentHint == null && c.payId != null && result.sourceApp in sourceNames && result.sourceApp !in setOf("bank", "card", "receipt")) {
                 dao.putRule(RuleKind.SOURCE_DEFAULT_PAYMENT, result.sourceApp, c.payId.toString())
             }

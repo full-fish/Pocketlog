@@ -280,6 +280,26 @@ class AutoInputTest {
     }
 
     @Test
+    fun onlyAPinnedPickBecomesARule() = runBlocking {
+        val cats = dao.categoriesOnce()
+        val drinks = cats.first { it.name == "술·유흥" && it.parentId == null }.id
+        fun tag(name: String) = cats.first { it.name == name && it.parentId != null }
+        fun rule() = runBlocking { Categorizer.fromRules("GS25 역삼점", dao.rulesOnce(RuleKind.CATEGORY)) }
+        // a 0.8 s press on the category, then on its tag: the rule follows at once
+        Categorizer.pin("GS25 역삼점", drinks)
+        assertEquals(Pick(drinks), rule())
+        Categorizer.pin("GS25 역삼점", drinks, tag("홈술"))
+        assertEquals(Pick(drinks, listOf(tag("홈술").id)), rule())
+        // 공통 태그 are about that one time: never a rule
+        assertEquals("공통 태그는 그때그때 달라서 규칙에 넣지 않아요", Categorizer.pin("GS25 역삼점", drinks, tag("데이트")))
+        // pressing a pinned one again takes it off
+        Categorizer.pin("GS25 역삼점", drinks, tag("홈술"))
+        assertEquals(Pick(drinks), rule())
+        Categorizer.pin("GS25 역삼점", drinks)
+        assertEquals(null, rule())
+    }
+
+    @Test
     fun blockRuleSkipsMessage() {
         runBlocking { dao.insert(Rule(kind = RuleKind.BLOCK, pattern = "토스", value = "")) }
         receive("ezl 지하철 1건 이용 1,550원 결제 완료", title = "토스", pkg = "viva.republica.toss")

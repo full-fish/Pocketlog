@@ -7,6 +7,7 @@ import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.Rule
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxType
+import com.choimanseon.pocketlog.domain.josa
 import com.choimanseon.pocketlog.domain.tops
 
 /** A category and its tags, as a rule stores them: "12" or "12|31,40". */
@@ -106,13 +107,42 @@ object Categorizer {
 
     suspend fun categorize(merchant: String, type: TxType): Pick? {
         if (!app.prefs.autoCategory || merchant.isBlank()) return null
-        val dao = app.dao
-        val cats = dao.categoriesOnce()
-        val byId = cats.associateBy { it.id }
-        return fromRules(merchant, dao.rulesOnce(RuleKind.CATEGORY))
+        return ruleFor(merchant, type) ?: fromDictionary(merchant, type, app.dao.categoriesOnce())
+    }
+
+    /** The rule for [merchant] (one the user pinned, or an AI answer kept), if its category is still of [type]. */
+    suspend fun ruleFor(merchant: String, type: TxType): Pick? {
+        val byId = app.dao.categoriesOnce().associateBy { it.id }
+        return fromRules(merchant, app.dao.rulesOnce(RuleKind.CATEGORY))
             ?.takeIf { p -> byId[p.category]?.type == type }
             ?.let { p -> p.copy(tags = p.tags.filter { it in byId }) } // a deleted tag drops out
-            ?: fromDictionary(merchant, type, cats)
+    }
+
+    /**
+     * A 0.8 s press on a category or one of its tags (entry sheet, screenshot review): it becomes [key]'s rule right away, or
+     * comes off when it is already there. A plain pick is for that record only. Returns what to tell the user.
+     */
+    suspend fun pin(key: String, category: Long, tag: Category? = null): String {
+        val k = key.trim()
+        if (k.isEmpty()) return "가맹점을 먼저 적으면 규칙으로 기억해요"
+        val cats = app.dao.categoriesOnce()
+        if (tag != null && cats.firstOrNull { it.id == tag.parentId }?.tagGroup == true) return "공통 태그는 그때그때 달라서 규칙에 넣지 않아요"
+        val rule = fromRules(k, app.dao.rulesOnce(RuleKind.CATEGORY))
+        val now = rule?.takeIf { it.category == category }?.tags.orEmpty()
+        val name = cats.firstOrNull { it.id == category }?.name.orEmpty()
+        return when {
+            tag == null && rule?.category == category -> forget(k).let { "$k 규칙을 지웠어요" }
+            tag == null -> learn(k, Pick(category)).let { "앞으로 ${k.josa("은", "는")} ${name.josa("으로", "로")} 넣어요" }
+            tag.id in now -> learn(k, Pick(category, now - tag.id)).let { "$k 규칙에서 #${tag.name.josa("을", "를")} 뺐어요" }
+            else -> learn(k, Pick(category, now + tag.id)).let { "앞으로 ${k.josa("은", "는")} $name #${tag.name.josa("으로", "로")} 넣어요" }
+        }
+    }
+
+    /** Drops every rule that matches [merchant] (its brand's and its own): its pin was taken off. */
+    suspend fun forget(merchant: String) {
+        val norm = normalize(merchant)
+        app.dao.rulesOnce(RuleKind.CATEGORY).filter { it.pattern.isNotEmpty() && norm.contains(it.pattern) }
+            .forEach { app.dao.deleteRule(RuleKind.CATEGORY, it.pattern) }
     }
 
     /** A merchant no rule or dictionary word knows: the AI picks the category and its tags, and the answer becomes a rule. */
@@ -128,7 +158,7 @@ object Categorizer {
     }
 
     /**
-     * When the user fixes a category or tags (or the AI picks them), remember them for that merchant.
+     * When the user pins a category or tags (a 0.8 s press, not a plain pick), or the AI picks them, remember them for that merchant.
      * 공통 태그 (데이트, 친구·모임 …) are about that one time, not the place, so they are not remembered.
      * Nothing is added when the rules already give that answer. Otherwise the first rule for a brand covers every branch;
      * a fix that disagrees with an existing brand (or longer) rule stays an exception for this one name.
