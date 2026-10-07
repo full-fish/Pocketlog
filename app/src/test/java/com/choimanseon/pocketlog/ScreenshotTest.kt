@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -362,9 +363,12 @@ class EntryScreenshotTest {
         }
         listOf("1", "2", "000", "+", "3", "000").forEach { compose.onNodeWithText(it).performClick() }
         // 추가 puts the item aside, the next one goes in the cleared form, 저장 makes one record of both
-        compose.onAllNodes(hasSetTextAction())[1].performTextInput("와인")
+        compose.onAllNodes(hasSetTextAction())[0].performTextInput("동네마트")
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("와인")
         compose.onNodeWithText("추가").performClick()
+        compose.onNodeWithText("동네마트").assertIsNotEnabled() // one record, one merchant
         listOf("5", "000").forEach { compose.onNodeWithText(it).performClick() }
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("안주")
         compose.waitForIdle()
         val bmp = compose.onRoot().captureToImage().asAndroidBitmap()
         File("build/screenshots").mkdirs()
@@ -373,8 +377,8 @@ class EntryScreenshotTest {
         runBlocking(Dispatchers.IO) {
             var tx: com.choimanseon.pocketlog.data.Tx? = null
             while (tx == null) { delay(20); tx = app.dao.txAround(0, Long.MAX_VALUE).firstOrNull() }
-            assertEquals(20000L to "와인 외 1개", tx.amount to tx.memo)
-            assertEquals(listOf("와인" to 15000L, "품목" to 5000L), app.dao.splitsOf(tx.id).first().map { it.name to it.amount })
+            assertEquals(Triple(20000L, "와인 외 1개", "동네마트"), Triple(tx.amount, tx.memo, tx.merchant))
+            assertEquals(listOf("와인" to 15000L, "안주" to 5000L), app.dao.splitsOf(tx.id).first().map { it.name to it.amount })
         }
     }
 }

@@ -265,7 +265,10 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         return TxSplit(txId = 0, name = memo.trim(), amount = amount, categoryId = categoryId, tags = Scan.tagsOn(categoryId, tags, cats).joinToString(","))
     }
     fun addItem() {
+        // one record, one merchant: it is set before the first item and stays put while there are items
+        if (merchant.isBlank()) { nav.toast("가맹점을 먼저 적어 주세요"); return }
         items = items + (formItem() ?: return)
+        focus.clearFocus(); typing = false
         expr = ""; memo = ""; tags = emptySet(); installment = 0
     }
     /** An item put aside comes back into the form; what the form held goes aside in its place. */
@@ -456,8 +459,9 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             Field(merchant, { merchant = it }, when (type) { TxType.INCOME -> "어디서 받았나요"; TxType.SAVING -> "어디에 넣었나요"; else -> "어디에 썼나요" }, Modifier.weight(1f).onFocusChanged {
                 typing = it.isFocused
                 if (!it.isFocused && merchant.isNotBlank()) scope.launch { fillFromMerchant(merchant.trim()) }
-            })
-            if (!forFavorite && type != TxType.TRANSFER) Box(
+            }, enabled = items.isEmpty())
+            // a 즐겨찾기 would swap the merchant too
+            if (!forFavorite && type != TxType.TRANSFER && items.isEmpty()) Box(
                 Modifier.padding(start = 8.dp).clip(RoundedCornerShape(14.dp)).background(pal.warn.copy(alpha = 0.15f))
                     .clickable { focus.clearFocus(); typing = false; showFavorites = true }.padding(horizontal = 12.dp, vertical = 14.dp),
             ) { Text("즐겨찾기", style = MaterialTheme.typography.labelLarge, color = pal.warn) }
@@ -585,10 +589,10 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
 }
 
 @Composable
-private fun Field(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier) {
+private fun Field(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
     BasicTextField(
-        value = value, onValueChange = onChange, singleLine = true,
-        textStyle = MaterialTheme.typography.bodyLarge.copy(color = pal.text),
+        value = value, onValueChange = onChange, singleLine = true, enabled = enabled,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = if (enabled) pal.text else pal.sub),
         cursorBrush = SolidColor(pal.brand),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(pal.surface).padding(horizontal = 16.dp, vertical = 14.dp),
