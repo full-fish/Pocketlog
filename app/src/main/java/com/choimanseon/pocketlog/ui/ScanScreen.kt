@@ -144,7 +144,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     val dupTags = remember(job.id) { mutableStateListOf(*Array(n) { emptyList<Long>() }) }
     val dupChoice = remember(job.id) { mutableStateListOf(*Array(n) { Dup.MERGE }) }
     var separate by remember { mutableStateOf(false) }
-    var together by remember { mutableStateOf(false) } // 같은 가맹점은 한 건으로
+    var together by remember { mutableStateOf(true) } // 같은 가맹점은 한 건으로
     var pickCat by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var pickPay by remember { mutableStateOf<Int?>(null) }
     var editTotal by remember { mutableStateOf<Int?>(null) }
@@ -187,7 +187,8 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     // what 같은 가맹점은 한 건으로 can put together: new records of one day at one merchant
     val newOnes = chosen.filter { dups[it] == null || choice[it] == Dup.NEW }
     val combinable = newOnes.groupBy { Scan.sameShop(result.orders[it]) }.any { it.value.size > 1 }
-    val newCount = if (together && combinable) newOnes.distinctBy { Scan.sameShop(result.orders[it]) }.size else newOnes.size
+    val combined = together && combinable
+    val newCount = if (combined) newOnes.distinctBy { Scan.sameShop(result.orders[it]) }.size else newOnes.size
     val fills = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.MISSING }
     val swaps = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.DIFFERENT }
 
@@ -225,9 +226,10 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
             )
         }
         item {
-            // AI reads what the app shows as separate orders apart: put them together here (separate payments stay apart by default)
-            if (combinable) SwitchRow("같은 가맹점은 한 건으로", "같은 날 같은 가맹점 주문을 내역 하나로 합쳐요. 통계는 품목별 카테고리로 나눠요", together) { together = it }
-            if (result.orders.any { it.items.size > 1 } || (together && combinable)) SwitchRow("품목별로 따로 저장", "끄면 주문 1건으로 저장하고, 통계는 품목별 카테고리로 나눠요", separate) { separate = it }
+            // AI reads what the app shows as separate orders apart: one record by default. Item by item would undo that,
+            // so 품목별로 따로 저장 is only offered with the orders kept apart
+            if (combinable) SwitchRow("같은 가맹점은 한 건으로", "같은 날 같은 가맹점 주문을 내역 하나로 합쳐요. 끄면 주문마다 따로 저장해요", together) { together = it }
+            if (result.orders.any { it.items.size > 1 } && !combined) SwitchRow("품목별로 따로 저장", "끄면 주문 1건으로 저장하고, 통계는 품목별 카테고리로 나눠요", separate) { separate = it }
         }
     }
     PrimaryButton(
@@ -248,7 +250,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
                     names = names[i].toList(), note = notes[i], tags = picks[i].toList(),
                 )
             }
-            app.scope.launch { Scan.save(job, result, choices, separate, together && combinable) }
+            app.scope.launch { Scan.save(job, result, choices, separate && !combined, combined) }
             nav.toast("저장했어요")
             nav.pop()
         },
