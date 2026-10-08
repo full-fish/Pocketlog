@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.performTextInput
@@ -401,6 +402,59 @@ class EntryScreenshotTest {
             assertEquals(Triple(20000L, "와인 외 1개", "동네마트"), Triple(tx.amount, tx.memo, tx.merchant))
             assertEquals(listOf("와인" to 15000L, "안주" to 5000L), app.dao.splitsOf(tx.id).first().map { it.name to it.amount })
         }
+    }
+}
+
+/** 수정 of a screenshot order (TODO 10/8): its items open one by one, the 배송비·할인 line stays out of the way. */
+@RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(sdk = [35], qualifiers = "w400dp-h860dp-xhdpi") // the whole form on screen, 수정하기 included
+class EntryItemsTest {
+    @get:Rule val compose = androidx.compose.ui.test.junit4.createComposeRule()
+
+    private fun open(): Long {
+        val id = runBlocking(Dispatchers.IO) {
+            while (app.dao.categoriesOnce().isEmpty()) delay(20)
+            fun item(name: String, amount: Long, tags: String? = "") = com.choimanseon.pocketlog.data.TxSplit(txId = 0, name = name, amount = amount, categoryId = null, tags = tags)
+            app.dao.insertWithSplits(
+                com.choimanseon.pocketlog.data.Tx(amount = 40900, occurredAt = System.currentTimeMillis(), merchant = "쿠팡", memo = "데일리샷 와인 외 1개"),
+                listOf(item("데일리샷 와인", 29900), item("키친타월 6롤", 9000), item("배송비·할인", 2000, null)),
+            )
+        }
+        compose.setContent { com.choimanseon.pocketlog.ui.PocketTheme(false) { com.choimanseon.pocketlog.ui.EntryForm(com.choimanseon.pocketlog.ui.Entry(editId = id), Nav(), {}, {}, {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("키친타월 6롤 9,000원", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        return id
+    }
+
+    private fun splitIds(id: Long) = runBlocking(Dispatchers.IO) { app.dao.splitsOf(id).first().map { it.id } }
+
+    /** The record once [changed]; the test clock stands still, so not by updatedAt. */
+    private fun saved(id: Long, changed: suspend () -> Boolean) = runBlocking(Dispatchers.IO) {
+        kotlinx.coroutines.withTimeout(10_000) { while (!changed()) delay(20) }
+        app.dao.txOnce(id)!! to app.dao.splitsOf(id).first().map { it.name to it.amount }
+    }
+
+    @Test
+    fun itsItemsStayWhenNothingChanges() {
+        val id = open()
+        val before = splitIds(id)
+        val bmp = compose.onRoot().captureToImage().asAndroidBitmap()
+        File("build/screenshots/9b-entry-edit-items.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        compose.onNodeWithText("수정하기").performClick()
+        val (tx, items) = saved(id) { splitIds(id) != before } // written again
+        assertEquals(40900L to "데일리샷 와인 외 1개", tx.amount to tx.memo)
+        assertEquals(listOf("데일리샷 와인" to 29900L, "키친타월 6롤" to 9000L, "배송비·할인" to 2000L), items)
+    }
+
+    @Test
+    fun aDroppedItemLeavesTheRecord() {
+        val id = open()
+        compose.onAllNodesWithContentDescription("품목 빼기")[1].performClick()
+        compose.onNodeWithText("수정하기").performClick()
+        // one item left is a plain record: its price and the shipping
+        val (tx, items) = saved(id) { app.dao.txOnce(id)!!.amount != 40900L }
+        assertEquals(31900L to "데일리샷 와인", tx.amount to tx.memo)
+        assertEquals(emptyList<Pair<String, Long>>(), items)
     }
 }
 

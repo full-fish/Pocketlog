@@ -195,9 +195,14 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
     /** In a foreign currency [expr] is a plain decimal number and the won follows from the day's rate. */
     fun wonAmount(): Long? = if (!foreign) evalExpr(expr) else expr.toDoubleOrNull()?.let { v -> rate?.let { Math.round(v * it) } }
     // 추가 puts the form aside as one item and clears it for the next; 저장 makes one record of them all, like a
-    // screenshot order. Only a new expense in won: an installment plan or a foreign amount takes no items.
+    // screenshot order. Only an expense in won: an installment plan or a foreign amount takes no items.
     var items by remember { mutableStateOf(emptyList<TxSplit>()) }
-    val itemsOn = original == null && !forFavorite && type == TxType.EXPENSE && !foreign
+    val itemsOn = !forFavorite && type == TxType.EXPENSE && !foreign && planMonths <= 1
+    // 수정 of a record with items opens them one by one (TODO #67's records): its 배송비·할인 line and its own tags stay
+    var hadItems by remember { mutableStateOf(false) }
+    var adjust by remember { mutableStateOf<TxSplit?>(null) }
+    var ownTags by remember { mutableStateOf(emptySet<Long>()) }
+    var typedMemo by remember { mutableStateOf<String?>(null) } // a 품명 the user wrote over the items' "휴지 외 2개"
 
     LaunchedEffect(entry) {
         // an installment month opens as its whole purchase: month 1's date, the full price
@@ -217,6 +222,15 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             val dt = Instant.ofEpochMilli(src.occurredAt).atZone(zone)
             date = dt.toLocalDate()
             time = dt.toLocalTime().withSecond(0).withNano(0)
+            val splits = entry.editId?.let { dao.splitsOf(it).first() }.orEmpty()
+            hadItems = splits.isNotEmpty()
+            if (splits.size > 1 && rows.size == 1 && src.type == TxType.EXPENSE && src.amount > 0) {
+                adjust = Scan.adjustment(splits)
+                items = splits.filter { it != adjust }
+                ownTags = tags.filter { t -> splits.none { t in it.tagIds() } }.toSet()
+                typedMemo = src.memo.takeIf { it.isNotBlank() && !it.startsWith(splits.first().name) }
+                expr = ""; memo = ""; tags = emptySet() // the form is for one more item
+            }
         } else if (entry.favorite != null) {
             entry.favorite.takeIf { it.id != 0L }?.let { f ->
                 type = f.type
@@ -284,16 +298,16 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         // the form is the last item, unless its amount is empty; one item alone is a plain record
         val parts = if (items.isEmpty()) emptyList() else items + if (expr.isEmpty()) emptyList() else listOf(formItem() ?: return)
         val one = parts.singleOrNull()
-        val splits = if (parts.size < 2) emptyList() else parts.map { p -> p.copy(name = p.name.ifBlank { cats.firstOrNull { it.id == p.categoryId }?.name ?: "품목" }) }
+        val splits = if (parts.size < 2) emptyList() else parts.map { p -> p.copy(name = p.name.ifBlank { cats.firstOrNull { it.id == p.categoryId }?.name ?: "품목" }) } + listOfNotNull(adjust)
         // like a screenshot order: the biggest item's category, each item's tags that fit it; every item keeps its own
         val mainCat = if (one != null) one.categoryId else if (splits.isNotEmpty()) splits.maxBy { it.amount }.categoryId else categoryId
         val recordTags = when {
             splits.isNotEmpty() -> Scan.orderTags(mainCat, splits.map { it.categoryId }, splits.map { it.tagIds() }, cats)
             one != null -> one.tagIds()
             else -> tags
-        }
-        val name = splits.firstOrNull()?.let { "${it.name} 외 ${splits.size - 1}개" } ?: one?.name ?: memo.trim()
-        val amount = if (parts.isEmpty()) wonAmount() ?: 0L else parts.sumOf { it.amount }
+        } + Scan.tagsOn(mainCat, ownTags, cats)
+        val name = splits.firstOrNull()?.let { typedMemo ?: "${it.name} 외 ${parts.size - 1}개" } ?: one?.name ?: memo.trim()
+        val amount = if (parts.isEmpty()) wonAmount() ?: 0L else parts.sumOf { it.amount } + (adjust?.amount ?: 0)
         if (amount <= 0) { nav.toast("금액을 입력해 주세요"); return }
         if (type == TxType.TRANSFER && (payId == null || toPayId == null)) { nav.toast("보내는 곳과 받는 곳을 골라 주세요"); return }
         val at = date.atTime(time).atZone(zone).toInstant().toEpochMilli()
@@ -323,9 +337,13 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             } else {
                 if (planMonths > 1 || tx.installmentMonths != o.installmentMonths) dao.replacePurchase(tx)
                 else dao.update(tx.copy(memo = tx.memo.ifBlank { o.memo.takeIf { autoInstallmentMemo.matches(it) }.orEmpty() }))
+                if (hadItems || splits.isNotEmpty()) {
+                    dao.deleteSplits(o.id)
+                    dao.insertSplits(splits.map { it.copy(id = 0, txId = o.id) })
+                }
                 o.id
             }
-            dao.setTags(id, if (type == TxType.TRANSFER) emptySet() else recordTags)
+            dao.setTags(id, if (type == TxType.TRANSFER) emptySet() else recordTags.distinct())
             if (type == TxType.EXPENSE) AutoInput.checkBudget()
         }
         nav.toast(if (o != null) "수정했어요" else "기록했어요")
@@ -436,7 +454,8 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         // the items put aside: a tap brings one back into the form, ✕ drops it
         if (items.isNotEmpty()) {
             Text(
-                "담은 품목 ${items.size}개 · 합계 ${num(items.sumOf { it.amount } + (evalExpr(expr)?.coerceAtLeast(0) ?: 0))}원",
+                "담은 품목 ${items.size}개 · 합계 ${num(items.sumOf { it.amount } + (adjust?.amount ?: 0) + (evalExpr(expr)?.coerceAtLeast(0) ?: 0))}원" +
+                    (adjust?.let { " (${it.name} ${num(it.amount)}원 포함)" } ?: ""),
                 style = MaterialTheme.typography.labelMedium, color = pal.sub, modifier = Modifier.padding(bottom = 6.dp),
             )
             Row(Modifier.padding(bottom = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -459,7 +478,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
             Field(merchant, { merchant = it }, when (type) { TxType.INCOME -> "어디서 받았나요"; TxType.SAVING -> "어디에 넣었나요"; else -> "어디에 썼나요" }, Modifier.weight(1f).onFocusChanged {
                 typing = it.isFocused
                 if (!it.isFocused && merchant.isNotBlank()) scope.launch { fillFromMerchant(merchant.trim()) }
-            }, enabled = items.isEmpty())
+            }, enabled = items.isEmpty() || original != null) // 수정 may fix the merchant a screenshot got wrong
             // a 즐겨찾기 would swap the merchant too
             if (!forFavorite && type != TxType.TRANSFER && items.isEmpty()) Box(
                 Modifier.padding(start = 8.dp).clip(RoundedCornerShape(14.dp)).background(pal.warn.copy(alpha = 0.15f))
@@ -520,7 +539,7 @@ fun EntryForm(entry: Entry, nav: Nav, onCamera: () -> Unit, onPhotos: () -> Unit
         )
         else if (itemsOn) Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SoftButton("추가", ::addItem, Modifier.weight(1f).height(54.dp), color = pal.brand)
-            PrimaryButton("저장하기", ::save, Modifier.weight(3f))
+            PrimaryButton(if (original != null) "수정하기" else "저장하기", ::save, Modifier.weight(3f))
         }
         else PrimaryButton(if (original != null) "수정하기" else "저장하기", ::save, Modifier.padding(top = 12.dp))
     }

@@ -30,8 +30,10 @@ import com.choimanseon.pocketlog.ai.Scan
 import com.choimanseon.pocketlog.app
 import com.choimanseon.pocketlog.auto.AutoInput
 import com.choimanseon.pocketlog.auto.CardParser
+import com.choimanseon.pocketlog.auto.Categorizer
 import com.choimanseon.pocketlog.data.RawMessage
 import com.choimanseon.pocketlog.data.RawStatus
+import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.Tx
 import com.choimanseon.pocketlog.data.TxSource
 import com.choimanseon.pocketlog.data.TxSplit
@@ -61,6 +63,8 @@ fun DetailScreen(id: Long, nav: Nav) {
     val tagIds by rememberFlow(emptyList(), id) { dao.tagsOf(id) }
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<TxSplit?>(null) } // the item whose category and tags are being changed
+    val rules by rememberFlow(emptyList()) { dao.rules(RuleKind.CATEGORY) }
+    val scope = rememberCoroutineScope()
     val t = tx
 
     PageScaffold("내역", onBack = nav::pop) {
@@ -163,8 +167,15 @@ fun DetailScreen(id: Long, nav: Nav) {
             app.scope.launch { Scan.editItem(id, s.id, cat, picked) }
             editing = null
         }
+        // a 0.8 s press on a tag pins it with the category as the rule for the item's name, as on the review screen
+        val rule = Categorizer.fromRules(Scan.itemKey(s.name), rules)?.takeIf { it.category == cat }
         CategoryPickerSheet(TxType.EXPENSE, cats, cat, onDismiss = done, extra = {
-            ItemTagRows(cats, cat, picked) { tag -> picked = if (tag in picked) picked - tag else picked + tag }
+            ItemTagRows(cats, cat, picked, rule?.tags.orEmpty().toSet(), onHold = { tag ->
+                cat?.let { c ->
+                    if (tag.parentId == c) picked = picked + tag.id
+                    scope.launch { nav.toast(Categorizer.pin(Scan.itemKey(s.name), c, tag)) }
+                }
+            }) { tag -> picked = if (tag in picked) picked - tag else picked + tag }
             PrimaryButton("완료", done, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         }) { c ->
             cat = c
