@@ -72,12 +72,14 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import com.choimanseon.pocketlog.domain.shortWon
+import com.choimanseon.pocketlog.domain.toLocalDate
 import java.time.YearMonth
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import com.choimanseon.pocketlog.auto.Pick
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.PayKind
 import com.choimanseon.pocketlog.data.PayMethod
@@ -89,6 +91,7 @@ import com.choimanseon.pocketlog.domain.signedAmount
 import com.choimanseon.pocketlog.domain.tops
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -98,6 +101,8 @@ fun <T> rememberFlow(initial: T, vararg keys: Any?, flow: () -> Flow<T>): State<
     remember(*keys) { flow() }.collectAsStateWithLifecycle(initial)
 
 val timeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val dayTimeFmt = DateTimeFormatter.ofPattern("M/d HH:mm")
+private val yearDayTimeFmt = DateTimeFormatter.ofPattern("yyyy/M/d HH:mm")
 fun Long.fmt(f: DateTimeFormatter): String = Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).format(f)
 
 // ---------------------------------------------------------------- layout
@@ -346,11 +351,15 @@ fun amountColor(tx: Tx): Color = when {
 @Composable
 fun TxRow(
     tx: Tx, cat: Category?, pays: Map<Long, PayMethod>, showDate: Boolean = false,
-    selected: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit,
+    selected: Boolean = false, onLongClick: (() -> Unit)? = null,
+    tags: List<Category>? = null, // 내역: the category and tags beside the amount
+    rule: Pick? = null, // the merchant's rule: the category and tags it sets get a gold ring
+    onClick: () -> Unit,
 ) {
     val pay = tx.paymentMethodId?.let { pays[it] }
     val sub = buildList {
-        add(tx.occurredAt.fmt(if (showDate) DateTimeFormatter.ofPattern("M/d HH:mm") else timeFmt))
+        // a search reaches back years: a row from another year says which
+        add(tx.occurredAt.fmt(if (!showDate) timeFmt else if (tx.occurredAt.toLocalDate().year == LocalDate.now().year) dayTimeFmt else yearDayTimeFmt))
         if (tx.type == TxType.TRANSFER) add("${pay?.name ?: "?"} → ${tx.toPaymentMethodId?.let { pays[it]?.name } ?: "?"}")
         else pay?.let { add(it.name) }
         if (tx.memo.isNotBlank()) add(tx.memo)
@@ -379,6 +388,17 @@ fun TxRow(
             }
             Text(sub, style = MaterialTheme.typography.bodySmall, color = pal.sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        if (tags != null && tx.type != TxType.TRANSFER && (cat != null || tags.isNotEmpty())) {
+            val ruled = rule != null && rule.category == cat?.id
+            Column(Modifier.padding(start = 8.dp).widthIn(max = 112.dp), horizontalAlignment = Alignment.End) {
+                cat?.let { Label(it.name, ruled) }
+                // two tags fit; the rest as a count
+                if (tags.isNotEmpty()) Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    tags.take(2).forEach { Label("#${it.name}", ruled && it.id in rule!!.tags, Modifier.weight(1f, fill = false)) }
+                    if (tags.size > 2) Text("+${tags.size - 2}", style = MaterialTheme.typography.labelSmall, color = pal.faint)
+                }
+            }
+        }
         Spacer(Modifier.width(8.dp))
         Text(
             signedAmount(tx) + if (tx.originalAmount != null && tx.amount == 0L) " (${tx.originalAmount})" else "",
@@ -387,6 +407,13 @@ fun TxRow(
         )
     }
 }
+
+/** A category or tag beside an amount; [ruled] = what the merchant's rule sets, in a gold ring like its chip. */
+@Composable
+private fun Label(text: String, ruled: Boolean, modifier: Modifier = Modifier) = Text(
+    text, style = MaterialTheme.typography.labelSmall, color = pal.sub, maxLines = 1, overflow = TextOverflow.Ellipsis,
+    modifier = modifier.then(if (ruled) Modifier.border(1.dp, pal.gold, RoundedCornerShape(50)) else Modifier).padding(horizontal = 6.dp, vertical = 1.dp),
+)
 
 // ---------------------------------------------------------------- pickers
 

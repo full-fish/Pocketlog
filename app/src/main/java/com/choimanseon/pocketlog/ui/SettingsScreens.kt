@@ -639,6 +639,88 @@ fun SecurityScreen(nav: Nav) {
 
 // ---------------------------------------------------------------- data
 
+/** Google 드라이브 (TODO #34): Play services asks for the account and consent the first time, then just hands out tokens. Null = 취소. */
+@Composable
+fun rememberDriveToken(): suspend () -> String? {
+    val context = LocalContext.current
+    val wait = remember { mutableStateOf<kotlinx.coroutines.CompletableDeferred<String?>?>(null) }
+    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        wait.value?.complete(runCatching { Drive.client(context).getAuthorizationResultFromIntent(r.data).accessToken }.getOrNull())
+    }
+    return remember(consent) {
+        suspend { // on the main thread: it may open the consent screen
+            val result = Drive.authorize(context)
+            val ask = result.pendingIntent
+            if (ask == null) result.accessToken
+            else kotlinx.coroutines.CompletableDeferred<String?>().also {
+                wait.value = it
+                consent.launch(androidx.activity.result.IntentSenderRequest.Builder(ask.intentSender).build())
+            }.await()
+        }
+    }
+}
+
+fun driveError(e: Throwable) = when {
+    e is com.google.android.gms.common.api.ApiException -> "Google 드라이브에 연결하지 못했어요 (${e.statusCode}). 연결 설정이 필요할 수 있어요"
+    e is java.net.UnknownHostException || e is java.net.ConnectException -> "인터넷 연결을 확인해 주세요"
+    else -> e.message ?: "실패했어요"
+}
+
+@Composable
+fun BusyDialog(text: String) = AlertDialog(
+    onDismissRequest = {},
+    confirmButton = {},
+    text = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(24.dp))
+            Text(text, modifier = Modifier.padding(start = 16.dp))
+        }
+    },
+)
+
+/**
+ * 매일 자동 백업 being turned on (백업 · 복구, the first run), once the Google account is connected: the password twice, then
+ * the first backup goes up. The password is sealed by this phone's keystore (Vault) so the daily job can use it.
+ */
+@Composable
+fun AutoBackupPassword(driveToken: suspend () -> String?, toast: (String) -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var first by remember { mutableStateOf("") } // "" = first entry, else asking again
+    var busy by remember { mutableStateOf(false) }
+    if (busy) BusyDialog("첫 백업을 올리는 중이에요…")
+    else key(first) {
+        InputDialog(
+            title = if (first.isEmpty()) "자동 백업 비밀번호 정하기" else "한 번 더 입력해 주세요", hint = "비밀번호", password = true,
+            message = if (first.isEmpty()) "매일 올리는 백업을 이 비밀번호로 잠가요. 복구할 때 필요하고, 잊어버리면 백업을 열 수 없어요." else null,
+            onDismiss = onClose,
+        ) { pw ->
+            when {
+                first.isEmpty() && pw.length < 4 -> toast("비밀번호는 4자 이상으로 정해 주세요")
+                first.isEmpty() -> first = pw
+                pw != first -> { first = ""; toast("비밀번호가 달라요. 처음부터 다시 정해 주세요") }
+                else -> scope.launch {
+                    busy = true
+                    val result = runCatching {
+                        val secret = Vault.seal(pw)
+                        driveToken()?.also { withContext(Dispatchers.IO) { Drive.upload(it, Backup.sealed(context, pw)) } }?.let { secret }
+                    }
+                    result.fold({ secret ->
+                        if (secret == null) toast("Google 계정 연결을 취소했어요")
+                        else {
+                            app.prefs.driveSecret = secret
+                            app.prefs.driveLast = java.time.LocalDateTime.now().withNano(0).toString()
+                            app.prefs.driveAuto = true
+                            toast("매일 자동 백업을 켰어요. 첫 백업도 올렸어요")
+                        }
+                    }, { toast(driveError(it)) })
+                    onClose()
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun DataScreen(nav: Nav) {
     val context = LocalContext.current
@@ -653,25 +735,9 @@ fun DataScreen(nav: Nav) {
     var clev by remember { mutableStateOf<Pair<java.io.File, ClevImport.Summary>?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
 
-    // Google 드라이브 (TODO #34): Play services asks for the account and consent the first time, then just hands out tokens
-    var consentWait by remember { mutableStateOf<kotlinx.coroutines.CompletableDeferred<String?>?>(null) }
-    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
-        consentWait?.complete(runCatching { Drive.client(context).getAuthorizationResultFromIntent(r.data).accessToken }.getOrNull())
-    }
-    suspend fun driveToken(): String? { // on the main thread: it may open the consent screen
-        val result = Drive.authorize(context)
-        val ask = result.pendingIntent ?: return result.accessToken
-        val wait = kotlinx.coroutines.CompletableDeferred<String?>().also { consentWait = it }
-        consent.launch(androidx.activity.result.IntentSenderRequest.Builder(ask.intentSender).build())
-        return wait.await()
-    }
-    fun driveError(e: Throwable) = when {
-        e is com.google.android.gms.common.api.ApiException -> "Google 드라이브에 연결하지 못했어요 (${e.statusCode}). 연결 설정이 필요할 수 있어요"
-        e is java.net.UnknownHostException || e is java.net.ConnectException -> "인터넷 연결을 확인해 주세요"
-        else -> e.message ?: "실패했어요"
-    }
+    val driveToken = rememberDriveToken() // Google 드라이브 (TODO #34)
     var driveBackup by remember { mutableStateOf(false) } // asking the password for a new Drive backup
-    var autoPassword by remember { mutableStateOf<String?>(null) } // 매일 자동 백업 being turned on: "" = first entry, else asking again
+    var autoPassword by remember { mutableStateOf(false) } // 매일 자동 백업 being turned on
     var driveFiles by remember { mutableStateOf<List<Drive.File>?>(null) }
     var driveRestore by remember { mutableStateOf<Drive.File?>(null) } // asking the password for this one
     val pickClev = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -684,7 +750,7 @@ fun DataScreen(nav: Nav) {
 
     PageScaffold("백업 · 복구", onBack = nav::pop) { Column(Modifier.verticalScroll(rememberScrollState())) {
         Text(
-            "휴대폰 설정의 Google 백업이 켜져 있으면 내역과 설정이 하루 한 번쯤 자동으로 백업되고, 앱을 다시 설치하면 돌아와요 (스크린샷 원본은 빼고). 아래 백업 파일은 비밀번호로 암호화해서 원하는 곳에 저장해요.",
+            "휴대폰 설정의 Google 백업이 켜져 있으면 내역과 설정이 하루 한 번쯤 자동으로 백업되고, 앱을 다시 설치하면 돌아와요 (스크린샷 원본은 빼고). 아래 백업 파일과 드라이브 백업은 비밀번호로 암호화하고, 내역 · 자동 분류 규칙 · 설정까지 모두 담아요 (스크린샷 원본과 앱 잠금은 빼고).",
             style = MaterialTheme.typography.bodySmall, color = pal.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         )
         ListRow("백업 파일 만들기", "암호화된 .plbak 파일로 저장해요") { create.launch("pocketlog-${LocalDate.now()}.plbak") }
@@ -707,7 +773,7 @@ fun DataScreen(nav: Nav) {
                 busy = "Google 계정을 확인하는 중이에요…"
                 val token = runCatching { driveToken() }
                 busy = null
-                token.fold({ if (it == null) nav.toast("Google 계정 연결을 취소했어요") else autoPassword = "" }, { nav.toast(driveError(it)) })
+                token.fold({ if (it == null) nav.toast("Google 계정 연결을 취소했어요") else autoPassword = true }, { nav.toast(driveError(it)) })
             }
         }
         ListRow("Google 드라이브에서 복구", "드라이브에 올린 백업 중 하나를 골라요. 지금 데이터는 그 내용으로 바뀌어요") {
@@ -795,42 +861,7 @@ fun DataScreen(nav: Nav) {
             nav.toast(result.fold({ if (it == null) "Google 계정 연결을 취소했어요" else "Google 드라이브에 백업했어요" }, ::driveError))
         }
     }
-    autoPassword?.let { first ->
-        key(first) {
-            InputDialog(
-                title = if (first.isEmpty()) "자동 백업 비밀번호 정하기" else "한 번 더 입력해 주세요", hint = "비밀번호", password = true,
-                message = if (first.isEmpty()) "매일 올리는 백업을 이 비밀번호로 잠가요. 복구할 때 필요하고, 잊어버리면 백업을 열 수 없어요." else null,
-                onDismiss = { autoPassword = null },
-            ) { pw ->
-                when {
-                    first.isEmpty() && pw.length < 4 -> nav.toast("비밀번호는 4자 이상으로 정해 주세요")
-                    first.isEmpty() -> autoPassword = pw
-                    pw != first -> { autoPassword = ""; nav.toast("비밀번호가 달라요. 처음부터 다시 정해 주세요") }
-                    else -> {
-                        autoPassword = null
-                        scope.launch {
-                            busy = "첫 백업을 올리는 중이에요…"
-                            // the password is sealed by this phone's keystore (Vault) so the daily job can use it
-                            val result = runCatching {
-                                val secret = Vault.seal(pw)
-                                driveToken()?.also { withContext(Dispatchers.IO) { Drive.upload(it, Backup.sealed(context, pw)) } }?.let { secret }
-                            }
-                            busy = null
-                            result.fold({ secret ->
-                                if (secret == null) nav.toast("Google 계정 연결을 취소했어요")
-                                else {
-                                    app.prefs.driveSecret = secret
-                                    app.prefs.driveLast = java.time.LocalDateTime.now().withNano(0).toString()
-                                    app.prefs.driveAuto = true
-                                    nav.toast("매일 자동 백업을 켰어요. 첫 백업도 올렸어요")
-                                }
-                            }, { nav.toast(driveError(it)) })
-                        }
-                    }
-                }
-            }
-        }
-    }
+    if (autoPassword) AutoBackupPassword(driveToken, nav::toast) { autoPassword = false }
     driveFiles?.let { files ->
         val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy년 M월 d일 HH:mm").withZone(java.time.ZoneId.systemDefault())
         ChoiceDialog("어느 백업으로 복구할까요?", files.map { "${fmt.format(it.modified)} · ${"%.1f".format(it.size / 1_048_576.0)}MB" }, -1, { driveFiles = null }) {
@@ -853,18 +884,7 @@ fun DataScreen(nav: Nav) {
             }
         }
     }
-    busy?.let { text ->
-        AlertDialog(
-            onDismissRequest = {},
-            confirmButton = {},
-            text = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(24.dp))
-                    Text(text, modifier = Modifier.padding(start = 16.dp))
-                }
-            },
-        )
-    }
+    busy?.let { BusyDialog(it) }
     if (confirmReset == 1) ConfirmDialog("정말 초기화할까요?", "모든 기록이 지워지고 되돌릴 수 없어요. 먼저 백업 파일을 만들어 두는 걸 권해요.", "다음", danger = true, onDismiss = { confirmReset = 0 }) { confirmReset = 2 }
     if (confirmReset == 2) ConfirmDialog("마지막 확인", "지금 초기화합니다.", "초기화", danger = true, onDismiss = { confirmReset = 0 }) {
         confirmReset = 0

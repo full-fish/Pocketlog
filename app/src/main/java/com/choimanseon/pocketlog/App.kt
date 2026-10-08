@@ -98,6 +98,26 @@ class Prefs(context: Context) {
 
     fun shows(b: com.choimanseon.pocketlog.data.Budget) = b.period.name !in budgetHidden.split(',')
 
+    /**
+     * The settings a backup carries (Backup.sealed). Not the app lock, which belongs to the phone, nor 매일 자동 백업: its
+     * password is sealed by this phone's keystore. What is left out of [settings] was at its default, so [restore] clears it.
+     */
+    private val carried = listOf(
+        "monthStartDay", "weekStart", "theme", "autoInput", "notifyOnSave", "autoCategory", "myName", "aiConsent", "aiModel",
+        "monthlyReport", "budgetLinked", "budgetHidden", "favoriteSort",
+    )
+    fun settings() = org.json.JSONObject(sp.all.filterKeys { it in carried })
+    fun restore(settings: org.json.JSONObject) = sp.edit().apply {
+        carried.forEach { k ->
+            when (val v = settings.opt(k)) {
+                is Boolean -> putBoolean(k, v)
+                is Int -> putInt(k, v)
+                is String -> putString(k, v)
+                else -> remove(k)
+            }
+        }
+    }.commit()
+
     private fun int(key: String, def: Int) = pref({ sp.getInt(key, def) }, { sp.edit().putInt(key, it).apply() })
     private fun bool(key: String, def: Boolean) = pref({ sp.getBoolean(key, def) }, { sp.edit().putBoolean(key, it).apply() })
     private fun string(key: String, def: String) = pref({ sp.getString(key, def) ?: def }, { sp.edit().putString(key, it).apply() })

@@ -306,7 +306,7 @@ data class TxFilter(
     val type: TxType? = null,
     val category: Long? = null,
     val uncategorized: Boolean = false,
-    val tag: Long? = null,
+    val anyTag: Set<Long> = emptySet(), // has one of these: a tag name under several categories is one tag in the stats
     val untagged: Boolean = false,
     val pay: Long? = null,
     val noPay: Boolean = false,
@@ -320,7 +320,7 @@ fun TxFilter.matches(tx: Tx, splits: List<TxSplit>?, tags: List<Long>?): Boolean
     if (!tx.countable() || tx.occurredAt < start || tx.occurredAt >= end || (type != null && tx.type != type)) return false
     if (category != null && tx.categoryId != category && splits.orEmpty().none { it.categoryId == category }) return false
     if (uncategorized && (tx.categoryId != null || splits.orEmpty().any { it.categoryId != null })) return false
-    if (tag != null && tag !in tags.orEmpty()) return false
+    if (anyTag.isNotEmpty() && tags.orEmpty().none { it in anyTag }) return false
     if (untagged && !tags.isNullOrEmpty()) return false
     if (pay != null && tx.paymentMethodId != pay) return false
     if (noPay && tx.paymentMethodId != null) return false
@@ -414,13 +414,21 @@ fun groupSums(
             GroupSum(s.category?.name ?: "미분류", s.total, s.category?.let { base.copy(category = it.id) } ?: base.copy(uncategorized = true))
         }
         GroupBy.TAG -> {
-            val sums = HashMap<Long?, Long>()
+            // by the tag's name alone, no category in front (TODO #42): 식비 #야식 and 외식 #야식 are one #야식
+            val sums = HashMap<String?, Long>()
+            val ids = HashMap<String, MutableSet<Long>>()
             val splitsByTx = splits.groupBy { it.txId }
-            inBase.forEach { tx -> tagShares(tx, splitsByTx[tx.id], tags[tx.id].orEmpty()).forEach { (t, v) -> sums.merge(t, v, Long::plus) } }
-            sums.map { (id, v) ->
-                val t = id?.let { byId[it] } // the tag's name alone, no category in front (TODO #42)
-                GroupSum(t?.name ?: "태그 없음", v, t?.let { base.copy(tag = it.id) } ?: base.copy(untagged = true))
+            inBase.forEach { tx ->
+                val byName = HashMap<String?, Long>()
+                tagShares(tx, splitsByTx[tx.id], tags[tx.id].orEmpty()).forEach { (id, v) ->
+                    val name = id?.let { byId[it]?.name?.trim() }
+                    if (name != null) ids.getOrPut(name) { mutableSetOf() } += id
+                    byName.merge(name, v, Long::plus)
+                }
+                // one record with both #야식s counts once: never more than the record itself
+                byName.forEach { (name, v) -> sums.merge(name, if (tx.amount >= 0) minOf(v, tx.amount) else maxOf(v, tx.amount), Long::plus) }
             }
+            sums.map { (name, v) -> GroupSum(name ?: "태그 없음", v, name?.let { base.copy(anyTag = ids.getValue(it)) } ?: base.copy(untagged = true)) }
         }
         GroupBy.PAY -> {
             val names = pays.associate { it.id to it.name }

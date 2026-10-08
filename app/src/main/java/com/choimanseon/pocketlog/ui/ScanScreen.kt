@@ -144,6 +144,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     val dupTags = remember(job.id) { mutableStateListOf(*Array(n) { emptyList<Long>() }) }
     val dupChoice = remember(job.id) { mutableStateListOf(*Array(n) { Dup.MERGE }) }
     var separate by remember { mutableStateOf(false) }
+    var together by remember { mutableStateOf(false) } // 같은 가맹점은 한 건으로
     var pickCat by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var pickPay by remember { mutableStateOf<Int?>(null) }
     var editTotal by remember { mutableStateOf<Int?>(null) }
@@ -183,7 +184,10 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
     }
     val choice = result.orders.indices.map { i -> if (holds[i] == Holds.NOTHING_NEW && dupChoice[i] == Dup.MERGE) Dup.SKIP else dupChoice[i] }
     val chosen = result.orders.indices.filter { include[it] && !(dups[it] != null && choice[it] == Dup.SKIP) }
-    val newCount = chosen.count { dups[it] == null || choice[it] == Dup.NEW }
+    // what 같은 가맹점은 한 건으로 can put together: new records of one day at one merchant
+    val newOnes = chosen.filter { dups[it] == null || choice[it] == Dup.NEW }
+    val combinable = newOnes.groupBy { Scan.sameShop(result.orders[it]) }.any { it.value.size > 1 }
+    val newCount = if (together && combinable) newOnes.distinctBy { Scan.sameShop(result.orders[it]) }.size else newOnes.size
     val fills = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.MISSING }
     val swaps = chosen.count { choice[it] == Dup.MERGE && holds[it] == Holds.DIFFERENT }
 
@@ -221,7 +225,9 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
             )
         }
         item {
-            if (result.orders.any { it.items.size > 1 }) SwitchRow("품목별로 따로 저장", "끄면 주문 1건으로 저장하고, 통계는 품목별 카테고리로 나눠요", separate) { separate = it }
+            // AI reads what the app shows as separate orders apart: put them together here (separate payments stay apart by default)
+            if (combinable) SwitchRow("같은 가맹점은 한 건으로", "같은 날 같은 가맹점 주문을 내역 하나로 합쳐요. 통계는 품목별 카테고리로 나눠요", together) { together = it }
+            if (result.orders.any { it.items.size > 1 } || (together && combinable)) SwitchRow("품목별로 따로 저장", "끄면 주문 1건으로 저장하고, 통계는 품목별 카테고리로 나눠요", separate) { separate = it }
         }
     }
     PrimaryButton(
@@ -229,7 +235,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
             saved -> "저장 완료"
             chosen.isEmpty() -> "저장할 주문을 골라 주세요"
             else -> "저장하기 · " + listOfNotNull(
-                if (newCount > 0) "새 내역 ${newCount}건 ${won(chosen.filter { dups[it] == null || choice[it] == Dup.NEW }.sumOf { totals[it] })}" else null,
+                if (newCount > 0) "새 내역 ${newCount}건 ${won(newOnes.sumOf { totals[it] })}" else null,
                 if (fills > 0) "품목 넣기 ${fills}건" else null,
                 if (swaps > 0) "품목 바꾸기 ${swaps}건" else null,
             ).joinToString(" + ")
@@ -242,7 +248,7 @@ private fun ColumnScope.ReviewOrders(job: ScanJob, result: ScanResult, nav: Nav)
                     names = names[i].toList(), note = notes[i], tags = picks[i].toList(),
                 )
             }
-            app.scope.launch { Scan.save(job, result, choices, separate) }
+            app.scope.launch { Scan.save(job, result, choices, separate, together && combinable) }
             nav.toast("저장했어요")
             nav.pop()
         },

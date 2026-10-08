@@ -205,6 +205,22 @@ class DomainTest {
         check(GroupBy.HOUR, mapOf("점심 11~14시" to 8000L, "밤 22~24시" to 3000L))
     }
 
+    /** #야식 under 식비 and under 외식 is one #야식 in the tag totals; a record carrying both counts once. */
+    @Test fun aTagNameUnderTwoCategoriesIsOneTag() {
+        fun at(day: Int, hour: Int) = LocalDate.of(2026, 10, day).atTime(hour, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        fun cat(id: Long, name: String, parent: Long? = null) = Category(id = id, type = TxType.EXPENSE, name = name, icon = "", color = 0, parentId = parent)
+        val cats = listOf(cat(1, "식비"), cat(2, "야식", 1), cat(3, "외식"), cat(4, "야식 ", 3))
+        val txs = listOf(
+            Tx(id = 1, amount = 8000, occurredAt = at(5, 23), categoryId = 1),
+            Tx(id = 2, amount = 20000, occurredAt = at(6, 23), categoryId = 3),
+            Tx(id = 3, amount = 5000, occurredAt = at(7, 23), categoryId = 1),
+        )
+        val tags = mapOf(1L to listOf(2L), 2L to listOf(4L), 3L to listOf(2L, 4L))
+        val groups = groupSums(txs, emptyList(), tags, cats, emptyList(), TxFilter(at(1, 0), at(31, 0), TxType.EXPENSE), GroupBy.TAG)
+        assertEquals(mapOf("야식" to 33000L), groups.associate { it.label to it.total })
+        assertEquals(33000L, txs.filter { groups.single().filter.matches(it, null, tags[it.id]) }.sumOf { it.amount }) // its list shows all three
+    }
+
     /** An order's 5,000원 discount is shared by its items by price, so each item's tag gets what was really paid for it. */
     @Test fun itemTagsShareTheDiscount() {
         val order = Tx(id = 1, amount = 54600, occurredAt = 0) // 44,700 + 14,900 − 5,000

@@ -31,6 +31,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.choimanseon.pocketlog.app
+import com.choimanseon.pocketlog.auto.Categorizer
+import com.choimanseon.pocketlog.auto.Pick
+import com.choimanseon.pocketlog.data.RuleKind
 import com.choimanseon.pocketlog.data.Category
 import com.choimanseon.pocketlog.data.PayMethod
 import com.choimanseon.pocketlog.data.Tx
@@ -81,6 +84,11 @@ fun HistoryTab(nav: Nav) {
     val pays by rememberFlow(emptyList()) { dao.payMethods() }
     val catMap = cats.associateBy { it.id }
     val payMap = pays.associateBy { it.id }
+    // each row shows its category and tags; what a merchant's rule set gets a gold ring
+    val txTags by rememberFlow(emptyList(), period) { dao.tagsBetween(period.startMillis, period.endMillis) }
+    val tagsOf = remember(txTags, catMap) { txTags.groupBy({ it.txId }, { catMap[it.tagId] }).mapValues { (_, t) -> t.filterNotNull() } }
+    val rules by rememberFlow(emptyList()) { dao.rules(RuleKind.CATEGORY) }
+    val ruleOf = remember(rules) { { merchant: String -> Categorizer.fromRules(merchant, rules) } }
     // 카테고리 · 결제수단으로 보기 (TODO #5); a category also matches order items (splits)
     val txs = remember(all, splits, catFilter, payFilter) {
         val splitsByTx = splits.groupBy { it.txId }
@@ -154,7 +162,7 @@ fun HistoryTab(nav: Nav) {
                 item { Calendar(period, daily, day, DayOfWeek.of(app.prefs.weekStart)) { day = if (day == it) null else it } }
                 val list = shown.filter { day == null || it.occurredAt.toLocalDate() == day }
                 if (day != null) item { DayHeader(day!!, list) }
-                items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, day == null, tx.id in selected, selecting) { toggle(tx.id) } }
+                items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, day == null, tx.id in selected, selecting, tagsOf[tx.id].orEmpty(), ruleOf) { toggle(tx.id) } }
             }
         } else {
             val groups = remember(shown) { shown.groupBy { it.occurredAt.toLocalDate() }.toSortedMap(compareByDescending { it }) }
@@ -162,7 +170,7 @@ fun HistoryTab(nav: Nav) {
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
                 groups.forEach { (date, list) ->
                     item(key = "h$date") { DayHeader(date, list) }
-                    items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, false, tx.id in selected, selecting) { toggle(tx.id) } }
+                    items(list, key = { it.id }) { tx -> SwipeTxRow(tx, catMap, payMap, nav, false, tx.id in selected, selecting, tagsOf[tx.id].orEmpty(), ruleOf) { toggle(tx.id) } }
                 }
             }
         }
@@ -220,7 +228,7 @@ private fun DayHeader(date: LocalDate, list: List<Tx>) {
 @Composable
 private fun SwipeTxRow(
     tx: Tx, cats: Map<Long, Category>, pays: Map<Long, PayMethod>, nav: Nav,
-    showDate: Boolean, selected: Boolean, selecting: Boolean, onSelect: () -> Unit,
+    showDate: Boolean, selected: Boolean, selecting: Boolean, tags: List<Category>, ruleOf: (String) -> Pick?, onSelect: () -> Unit,
 ) {
     val state = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
@@ -249,7 +257,8 @@ private fun SwipeTxRow(
             scope.launch { state.snapTo(SwipeToDismissBoxValue.Settled) }
         },
     ) {
-        TxRow(tx, tx.categoryId?.let { cats[it] }, pays, showDate, selected, onLongClick = onSelect) {
+        val rule = remember(tx.merchant, ruleOf) { ruleOf(tx.merchant) }
+        TxRow(tx, tx.categoryId?.let { cats[it] }, pays, showDate, selected, onLongClick = onSelect, tags = tags, rule = rule) {
             if (selecting) onSelect() else nav.push(Screen.Detail(tx.id))
         }
     }

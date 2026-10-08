@@ -113,4 +113,20 @@ class MigrationTest {
         assertEquals(7, cats.count { it.parentId == shared.id })
         room.close()
     }
+
+    @Test
+    fun aBackupCarriesTheRulesAndTheSettings() = runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+        val p = app.prefs
+        app.dao.putRule(RuleKind.CATEGORY, "동네마트", "999|1")
+        p.myName = "홍길동"; p.monthStartDay = 25; p.autoCategory = false
+        val file = File(app.cacheDir, "restored.db").apply { writeBytes(Backup.open(Backup.sealed(app, "1234"), "1234")) }
+        p.myName = ""; p.monthStartDay = 1; p.autoCategory = true
+        Backup.takeSettings(file)
+        assertEquals(Triple("홍길동", 25, false), Triple(p.myName, p.monthStartDay, p.autoCategory))
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            fun count(sql: String) = db.rawQuery(sql, null).use { it.moveToFirst(); it.getInt(0) }
+            assertEquals(1, count("SELECT COUNT(*) FROM Rule WHERE value = '999|1'"))
+            assertEquals(0, count("SELECT COUNT(*) FROM sqlite_master WHERE name = 'backup_settings'")) // gone before Room opens it
+        }
+    }
 }

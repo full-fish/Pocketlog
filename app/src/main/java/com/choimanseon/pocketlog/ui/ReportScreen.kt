@@ -1,7 +1,6 @@
 package com.choimanseon.pocketlog.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,13 +34,17 @@ fun ReportScreen(start: String?, nav: Nav) {
     val reports by rememberFlow(emptyList()) { app.dao.reports() }
     var shown by rememberSaveable { mutableStateOf(start) }
     var making by remember { mutableStateOf(false) }
+    var picking by remember { mutableStateOf(false) }
     val r = reports.firstOrNull { it.start == shown } ?: reports.firstOrNull()
+    val i = reports.indexOf(r)
 
     PageScaffold("월간 리포트", onBack = nav::pop) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-            if (reports.size > 1) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                reports.forEach { Chip(it.period().label(), it == r) { shown = it.start } }
-            }
+            // the 자산 tab's month switcher: ‹ an older report, › a newer one, the month itself lists them all (newest first)
+            if (r != null && reports.size > 1) PeriodSwitcher(
+                r.period().label(), reports.getOrNull(i + 1)?.let { o -> { shown = o.start } }, reports.getOrNull(i - 1)?.let { n -> { shown = n.start } },
+                Modifier.padding(start = 8.dp, top = 4.dp), onLabel = { picking = true },
+            )
             if (r == null) EmptyState(
                 Icons.Rounded.AutoAwesome, "아직 리포트가 없어요",
                 "한 달이 끝나면 다음 달 첫날 오전 9시에 지난달 리포트를 보내 드려요. 설정 → AI 사용 동의가 켜져 있어야 해요.",
@@ -62,6 +65,7 @@ fun ReportScreen(start: String?, nav: Nav) {
             ) { Text(if (making) "만드는 중이에요… (30초쯤)" else "지난달 리포트 지금 만들기 (개발용)") }
         }
     }
+    if (picking) ChoiceDialog("리포트", reports.map { it.period().label() }, i, { picking = false }) { shown = reports[it].start; picking = false }
 }
 
 /**

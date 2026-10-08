@@ -260,7 +260,7 @@ fun StatsTab(nav: Nav) {
             fun narrowed(f: TxFilter) = when {
                 narrowTo == null -> f
                 narrowTo.parentId == null -> f.copy(category = narrowTo.id)
-                else -> f.copy(tag = narrowTo.id)
+                else -> f.copy(anyTag = setOf(narrowTo.id))
             }
             val values = buckets.map { (q, _) -> total(inside(q).filter(::counts), type) }
             val avg = values.average().toLong()

@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Rule
+import org.robolectric.Shadows.shadowOf
 import android.content.ComponentName
 import android.provider.Settings
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -78,6 +79,8 @@ class ScreenshotTest {
         }
     }
 
+    private fun resume() = compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED).moveToState(Lifecycle.State.RESUMED)
+
     private fun nav(): Nav = MainActivity::class.java.getDeclaredField("nav").run { isAccessible = true; get(compose.activity) as Nav }
 
     @Test
@@ -85,20 +88,27 @@ class ScreenshotTest {
         shot("0-onboarding-1")
         repeat(3) { compose.onNodeWithText("다음").performClick() }
         shot("0-onboarding-2")
-        // no 다음 before the notification listener is on; turned on in the phone's settings, it shows when the app comes back
-        compose.onNodeWithText("알림 접근을 허용하면 다음으로 가요").assertIsNotEnabled()
+        // no 다음 before the permissions are given; given in the phone's settings, they show when the app comes back
+        compose.onNodeWithText("알림을 허용하면 다음으로 가요").assertIsNotEnabled()
         Settings.Secure.putString(app.contentResolver, "enabled_notification_listeners", ComponentName(app, AutoInputService::class.java).flattenToString())
-        compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED).moveToState(Lifecycle.State.RESUMED)
+        shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        resume()
         compose.onNodeWithText("다음").performClick()
         compose.onNodeWithText("배터리 제한 없음으로 하기").assertExists() // TODO #46
+        compose.onNodeWithText("제한 없음으로 하면 다음으로 가요").assertIsNotEnabled()
         shot("0-onboarding-3-battery")
+        shadowOf(app.getSystemService(android.os.PowerManager::class.java)).setIgnoringBatteryOptimizations(app.packageName, true)
+        resume()
         compose.onNodeWithText("다음").performClick()
+        compose.onNodeWithText("동의하면 다음으로 가요").assertIsNotEnabled()
         compose.onNodeWithText("동의하고 AI 쓰기").performClick()
         compose.onNodeWithText("동의했어요").assertExists()
         assertEquals(true, app.prefs.aiConsent)
         shot("0-onboarding-4-ai")
         compose.onNodeWithText("다음").performClick()
-        shot("0-onboarding-5")
+        shot("0-onboarding-5-backup") // the one step that can be skipped
+        compose.onNodeWithText("건너뛰기").performClick()
+        shot("0-onboarding-6")
         compose.onNodeWithText("시작하기").performClick()
 
         val (scanId, orderId) = runBlocking(Dispatchers.IO) { seedSample() }
@@ -226,6 +236,10 @@ class ScreenshotTest {
         val reportStart = runBlocking(Dispatchers.IO) { seedReport() }
         compose.runOnUiThread { nav().push(Screen.Reports(reportStart)) }
         shot("8e-report-1")
+        // ‹ goes to the older report and › back; the oldest has no ‹
+        compose.onNodeWithContentDescription("이전").performClick()
+        compose.onNodeWithContentDescription("이전").assertDoesNotExist()
+        compose.onNodeWithContentDescription("다음").performClick()
         listOf("카테고리", "자주 간 곳", "다음 달에 해 볼 것").forEachIndexed { i, section ->
             compose.onNodeWithText(section).performScrollTo()
             shot("8e-report-${i + 2}")
@@ -262,7 +276,11 @@ class ScreenshotTest {
             "highlights":[{"title":"술·유흥이 늘었어요","detail":"데일리샷 두 번이 컸어요."},{"title":"식비는 예산 안","detail":"300,000원 중 일부만 썼어요."},
             {"title":"구독 17,000원","detail":"넷플릭스 한 건이에요."}],"budget":"전체 예산 안에서 썼어요.","suggestions":["술은 주 1회로","구독 점검하기"],"praise":"예산을 지켰어요."}""",
         )
-        app.dao.upsert(com.choimanseon.pocketlog.data.Report(period.start.toString(), period.end.toString(), org.json.JSONObject().put("facts", facts).put("text", text).toString()))
+        val json = org.json.JSONObject().put("facts", facts).put("text", text).toString()
+        app.dao.upsert(com.choimanseon.pocketlog.data.Report(period.start.toString(), period.end.toString(), json))
+        // an older one too, for the month switcher
+        val before = period.shiftMonths(-1)
+        app.dao.upsert(com.choimanseon.pocketlog.data.Report(before.start.toString(), before.end.toString(), json))
         return period.start.toString()
     }
 
@@ -316,6 +334,9 @@ class ScreenshotTest {
             val shared = all.firstOrNull { it.tagGroup && it.type == tx.type }
             tagged[tx.merchant]?.let { names -> dao.setTags(id, names.map { n -> all.first { it.name == n && (it.parentId == parent?.id || it.parentId == shared?.id) }.id }) }
         }
+        // 김밥천국 is pinned to 식비 #외식: both get a gold ring on 내역
+        com.choimanseon.pocketlog.auto.Categorizer.pin("김밥천국", cat("식비"))
+        com.choimanseon.pocketlog.auto.Categorizer.pin("김밥천국", cat("식비"), all.first { it.name == "외식" && it.parentId == cat("식비") })
         val orderId = dao.insertWithSplits(
             Tx(amount = 52300, occurredAt = at(2, 12, 0), merchant = "쿠팡", memo = "데일리샷 와인 외 2개", categoryId = cat("술·유흥"), paymentMethodId = coupang, source = TxSource.SCREENSHOT),
             listOf(

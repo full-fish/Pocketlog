@@ -2,6 +2,7 @@ package com.choimanseon.pocketlog
 
 import android.content.Context
 import android.content.Intent
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.util.Base64
 import com.choimanseon.pocketlog.data.PocketDb
@@ -77,6 +78,8 @@ class WrongPassword : Exception("비밀번호가 맞지 않아요")
 
 /**
  * Encrypted backup file = "PLBK1" + salt(16) + iv(12) + AES-GCM(SQLite database file).
+ * The database file carries everything (records, categories and tags, rules, budgets, 결제수단, 즐겨찾기, reports, scan
+ * analyses), and the settings ride along in one extra table. Screenshot images stay out.
  * A plain Pocketlog database file restores too, without a password: the 똑똑가계부 history converted on a computer (TODO #29).
  */
 object Backup {
@@ -96,7 +99,7 @@ object Backup {
     /** The whole database encrypted with [password]: the .plbak file, also what goes to Google Drive. */
     fun sealed(context: Context, password: String): ByteArray {
         app.db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { it.moveToFirst() }
-        val plain = context.getDatabasePath(PocketDb.NAME).readBytes()
+        val plain = withSettings(context, context.getDatabasePath(PocketDb.NAME).readBytes())
         val salt = random(16)
         val iv = random(12)
         return MAGIC + salt + iv + cipher(Cipher.ENCRYPT_MODE, password, salt, iv).doFinal(plain)
@@ -113,6 +116,11 @@ object Backup {
     /** Replaces the database and restarts the app. [password] is null for a plain database file. */
     fun restore(context: Context, bytes: ByteArray, password: String?) {
         if (password == null) return replaceWith(context, bytes.also { requirePocketlog(context, it) })
+        replaceWith(context, open(bytes, password))
+    }
+
+    /** The database file inside a backup file. */
+    fun open(bytes: ByteArray, password: String): ByteArray {
         require(bytes.size > MAGIC.size + 28 && bytes.copyOfRange(0, MAGIC.size).contentEquals(MAGIC)) { "Pocketlog 백업 파일이 아니에요" }
         val salt = bytes.copyOfRange(MAGIC.size, MAGIC.size + 16)
         val iv = bytes.copyOfRange(MAGIC.size + 16, MAGIC.size + 28)
@@ -122,7 +130,31 @@ object Backup {
             throw WrongPassword()
         }
         require(String(plain, 0, SQLITE.length) == SQLITE) { "백업 파일이 손상됐어요" }
-        replaceWith(context, plain)
+        return plain
+    }
+
+    private const val SETTINGS = "backup_settings"
+
+    /** [db] with the settings (Prefs) in one extra table, so a backup stays a single SQLite file. */
+    private fun withSettings(context: Context, db: ByteArray): ByteArray {
+        val file = File(context.cacheDir, "backup-out.db").apply { writeBytes(db) }
+        try {
+            SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use {
+                it.execSQL("CREATE TABLE IF NOT EXISTS $SETTINGS (json TEXT NOT NULL)")
+                it.execSQL("DELETE FROM $SETTINGS")
+                it.execSQL("INSERT INTO $SETTINGS VALUES (?)", arrayOf(app.prefs.settings().toString()))
+            }
+            return file.readBytes()
+        } finally {
+            listOf("", "-wal", "-shm", "-journal").forEach { File(file.path + it).delete() }
+        }
+    }
+
+    /** The settings a restored database carries go back into Prefs, and the table goes before Room sees the file. Older backups have none. */
+    fun takeSettings(file: File) = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+        runCatching { db.rawQuery("SELECT json FROM $SETTINGS", null).use { c -> if (c.moveToFirst()) c.getString(0) else null } }.getOrNull()
+            ?.let { app.prefs.restore(org.json.JSONObject(it)) }
+        db.execSQL("DROP TABLE IF EXISTS $SETTINGS")
     }
 
     /** A 똑똑가계부 .db is SQLite too: only a database Room made for Pocketlog is taken. Room migrates an older one on open. */
@@ -144,6 +176,7 @@ object Backup {
         path.writeBytes(plain)
         File(path.path + "-wal").delete()
         File(path.path + "-shm").delete()
+        takeSettings(path)
         restart(context)
     }
 

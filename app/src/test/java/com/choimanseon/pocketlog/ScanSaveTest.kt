@@ -114,6 +114,26 @@ class ScanSaveTest {
         assertEquals(listOf(15000L, 9900L, 3000L), joined.orders.map { it.total }) // the order on the shared tile counts once
         assertEquals("coupang", joined.sourceApp)
         assertEquals(listOf("blurry", "너무 길어서 앞의 40조각까지만 읽었어요"), joined.warnings)
+        // an order across a seam: its first item at the end of one part, all of it in the next; the cut one goes
+        fun order(vararg names: String) = JSONObject().put("date", "2026-10-05").put("merchant", "쿠팡").put("total_amount", names.size * 1000L)
+            .put("items", JSONArray(names.map { JSONObject().put("name", it).put("amount", 1000) }))
+        fun of(vararg orders: JSONObject) = JSONObject().put("transactions", JSONArray(orders.toList()))
+        assertEquals(listOf(2000L), Scan.parse(Scan.join(listOf(of(order("휴지")), of(order("휴지", "세제")))).toString()).orders.map { it.total })
+    }
+
+    @Test
+    fun ordersOfOneShopGoInOneRecordWhenAsked() = runBlocking(Dispatchers.IO) {
+        val life = fresh().named("생활").id
+        val wipes = order.copy(total = 3000, items = listOf(ScanItem("물티슈", 1, 3000, null)))
+        val job = ScanJob(imageHash = "shop", imageCount = 1, status = ScanStatus.DONE).let { it.copy(id = dao.insert(it)) }
+        // 같은 가맹점은 한 건으로: two orders of one day at 쿠팡, one record of their three items
+        Scan.save(job, ScanResult("coupang", listOf(order, wipes), emptyList()), listOf(
+            OrderChoice(true, null, listOf(life, life), 15000, null),
+            OrderChoice(true, null, listOf(life), 3000, null, names = listOf("물티슈 100매")),
+        ), separateItems = false, together = true)
+        val tx = dao.txAround(0, Long.MAX_VALUE).single()
+        assertEquals(18000L to "휴지 30롤 외 2개", tx.amount to tx.memo)
+        assertEquals(listOf("휴지 30롤", "세재", "물티슈 100매"), dao.splitsOf(tx.id).first().map { it.name })
     }
 
     @Test

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import kotlin.math.abs
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -161,21 +162,29 @@ object Scan {
     fun join(parts: List<JSONObject>, cut: Boolean = false): JSONObject {
         if (parts.size == 1 && !cut) return parts[0]
         val seen = HashSet<String>()
-        val orders = JSONArray()
+        val orders = mutableListOf<Pair<Int, JSONObject>>() // the part it came from, the order
         val warnings = LinkedHashSet<String>()
-        parts.forEach { p ->
+        parts.forEachIndexed { n, p ->
             val ts = p.optJSONArray("transactions") ?: JSONArray()
             for (i in 0 until ts.length()) ts.getJSONObject(i).let { t ->
-                if (seen.add("${t.optString("date")}|${t.optString("merchant")}|${t.optLong("total_amount")}")) orders.put(t)
+                if (seen.add("${t.optString("date")}|${t.optString("merchant")}|${t.optLong("total_amount")}")) orders += n to t
             }
             val ws = p.optJSONArray("warnings") ?: JSONArray()
             for (i in 0 until ws.length()) warnings += ws.getString(i)
+        }
+        // an order across a seam is read twice: its first items at the end of one part, all of it in the next. The cut one goes.
+        fun names(t: JSONObject) = t.optJSONArray("items")?.let { a -> List(a.length()) { a.getJSONObject(it).optString("name") }.toSet() }.orEmpty()
+        val whole = orders.filterNot { (n, t) ->
+            orders.any { (m, o) ->
+                abs(n - m) == 1 && o.optString("date") == t.optString("date") && o.optString("merchant") == t.optString("merchant") &&
+                    names(o).size > names(t).size && names(o).containsAll(names(t))
+            }
         }
         if (cut) warnings += "너무 길어서 앞의 ${MAX_PARTS}조각까지만 읽었어요"
         return JSONObject()
             .put("source_app", parts.map { it.optString("source_app", "other") }.firstOrNull { it != "other" } ?: "other")
             .put("warnings", JSONArray(warnings.toList()))
-            .put("transactions", orders)
+            .put("transactions", JSONArray(whole.map { it.second }))
     }
 
     private fun friendly(e: Throwable): String = when {
@@ -368,11 +377,35 @@ object Scan {
 
     private fun itemsMemo(items: List<ScanItem>) = items.firstOrNull()?.name?.let { if (items.size > 1) "$it 외 ${items.size - 1}개" else it }.orEmpty()
 
-    suspend fun save(job: ScanJob, result: ScanResult, choices: List<OrderChoice>, separateItems: Boolean) {
+    /** Orders the review screen's 같은 가맹점은 한 건으로 puts together: same day, merchant and status, new ones only. */
+    fun sameShop(order: ScanOrder) = "${order.date}|${order.merchant.trim()}|${order.status}"
+
+    /**
+     * 같은 가맹점은 한 건으로: the orders of one day at one merchant become one order of all their items, so one record.
+     * One that goes into an existing record (품목 넣기 · 바꾸기) or isn't saved stays as it is.
+     */
+    fun combine(orders: List<ScanOrder>, choices: List<OrderChoice>): List<Pair<ScanOrder, OrderChoice>> =
+        orders.indices.groupBy { i -> if (choices[i].include && choices[i].mergeInto == null) sameShop(orders[i]) else "$i" }.values.map { g ->
+            if (g.size == 1) return@map orders[g[0]] to choices[g[0]]
+            fun <T> perItem(of: (Int, Int) -> T) = g.flatMap { i -> orders[i].items.indices.map { k -> of(i, k) } }
+            orders[g[0]].copy(
+                items = g.flatMap { orders[it].items }, total = g.sumOf { orders[it].total },
+                shippingFee = g.sumOf { orders[it].shippingFee }, discount = g.sumOf { orders[it].discount },
+            ) to choices[g[0]].copy(
+                payId = g.firstNotNullOfOrNull { choices[it].payId },
+                categories = perItem { i, k -> choices[i].categories.getOrNull(k) },
+                total = g.sumOf { choices[it].total },
+                names = perItem { i, k -> choices[i].names.getOrElse(k) { "" } },
+                note = g.map { choices[it].note.trim() }.filter { it.isNotEmpty() }.distinct().joinToString("\n"),
+                tags = perItem { i, k -> choices[i].tags.getOrNull(k) ?: orders[i].items[k].tags.toSet() },
+            )
+        }
+
+    suspend fun save(job: ScanJob, result: ScanResult, choices: List<OrderChoice>, separateItems: Boolean, together: Boolean = false) {
         val dao = app.dao
         val cats = dao.categoriesOnce()
         val sourceName = sourceNames[result.sourceApp] ?: "스크린샷"
-        result.orders.zip(choices).forEach { (scanned, c) ->
+        (if (together) combine(result.orders, choices) else result.orders.zip(choices)).forEach { (scanned, c) ->
             if (!c.include) return@forEach
             val order = named(scanned, c.names)
             val picks = order.items.mapIndexed { i, it -> c.tags.getOrNull(i) ?: it.tags.toSet() }
